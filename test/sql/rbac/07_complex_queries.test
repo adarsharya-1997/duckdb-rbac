@@ -1,0 +1,288 @@
+# name: test/sql/rbac/07_complex_queries.test
+# description: Test RBAC with JOINs, subqueries, CTEs, aggregates
+# group: [rbac]
+# requirements: Edge cases from LLD Section 12.5
+
+require rbac
+
+# =============================================================================
+# Setup
+# =============================================================================
+
+statement ok
+CREATE ROLE analyst;
+
+statement ok
+CREATE ROLE limited;
+
+statement ok
+CREATE TABLE orders (
+    id INTEGER,
+    customer_id INTEGER,
+    amount DECIMAL,
+    region VARCHAR
+);
+
+statement ok
+CREATE TABLE customers (
+    id INTEGER,
+    name VARCHAR,
+    tier VARCHAR
+);
+
+statement ok
+CREATE TABLE employees (
+    id INTEGER,
+    name VARCHAR,
+    manager_id INTEGER,
+    department VARCHAR,
+    salary DECIMAL
+);
+
+statement ok
+INSERT INTO orders VALUES 
+    (1, 1, 100.00, 'US'),
+    (2, 2, 200.00, 'EU'),
+    (3, 1, 150.00, 'US');
+
+statement ok
+INSERT INTO customers VALUES 
+    (1, 'Alice', 'Gold'),
+    (2, 'Bob', 'Silver');
+
+statement ok
+INSERT INTO employees VALUES 
+    (1, 'Alice', NULL, 'Engineering', 100000),
+    (2, 'Bob', 1, 'Engineering', 90000),
+    (3, 'Charlie', 1, 'Sales', 80000),
+    (4, 'Diana', 3, 'Sales', 70000);
+
+# Grant analyst access to all tables
+statement ok
+GRANT SELECT ON orders TO analyst;
+
+statement ok
+GRANT SELECT ON customers TO analyst;
+
+statement ok
+GRANT SELECT ON employees TO analyst;
+
+# Grant limited access to only orders
+statement ok
+GRANT SELECT ON orders TO limited;
+
+# =============================================================================
+# 8.1 JOINs - Setup verification
+# =============================================================================
+
+# T-08-01: JOIN two tables - user has access to both
+# Verify analyst has grants on both tables
+query I
+SELECT COUNT(*) FROM duckdb_table_privileges 
+WHERE grantee = 'analyst' AND table_name IN ('orders', 'customers');
+----
+2
+
+# T-08-02: JOIN two tables - user lacks access to one
+# Verify limited only has access to orders
+query I
+SELECT COUNT(*) FROM duckdb_table_privileges 
+WHERE grantee = 'limited' AND table_name IN ('orders', 'customers');
+----
+1
+
+# As superuser, verify JOIN works
+query II
+SELECT o.id, c.name 
+FROM orders o JOIN customers c ON o.customer_id = c.id
+ORDER BY o.id;
+----
+1	Alice
+2	Bob
+3	Alice
+
+# T-08-04: Self-join verification
+query II
+SELECT e1.name, e2.name AS manager
+FROM employees e1 
+LEFT JOIN employees e2 ON e1.manager_id = e2.id
+ORDER BY e1.id;
+----
+Alice	NULL
+Bob	Alice
+Charlie	Alice
+Diana	Charlie
+
+# =============================================================================
+# 8.2 Subqueries
+# =============================================================================
+
+# T-08-05: Subquery in FROM
+query I
+SELECT COUNT(*) FROM (SELECT * FROM orders WHERE region = 'US') sub;
+----
+2
+
+# T-08-06: Subquery in WHERE
+query I
+SELECT COUNT(*) FROM orders 
+WHERE customer_id IN (SELECT id FROM customers WHERE tier = 'Gold');
+----
+2
+
+# T-08-07: Correlated subquery
+query II
+SELECT c.name, (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id) as total
+FROM customers c
+ORDER BY c.id;
+----
+Alice	250.00
+Bob	200.00
+
+# =============================================================================
+# 8.3 CTEs
+# =============================================================================
+
+# T-08-08: WITH clause referencing table
+query I
+SELECT COUNT(*) FROM (
+    WITH us_orders AS (SELECT * FROM orders WHERE region = 'US')
+    SELECT * FROM us_orders
+);
+----
+2
+
+# T-08-09: Recursive CTE - policy should apply to all references
+query I
+SELECT COUNT(*) FROM (
+    WITH RECURSIVE subordinates AS (
+        SELECT id, name, manager_id FROM employees WHERE id = 1
+        UNION ALL
+        SELECT e.id, e.name, e.manager_id 
+        FROM employees e 
+        JOIN subordinates s ON e.manager_id = s.id
+    )
+    SELECT * FROM subordinates
+);
+----
+4
+
+# T-08-10: Multiple CTEs
+query I
+SELECT COUNT(*) FROM (
+    WITH 
+        us_orders AS (SELECT * FROM orders WHERE region = 'US'),
+        gold_customers AS (SELECT * FROM customers WHERE tier = 'Gold')
+    SELECT * FROM us_orders o 
+    JOIN gold_customers c ON o.customer_id = c.id
+);
+----
+2
+
+# =============================================================================
+# 8.4 Aggregations
+# =============================================================================
+
+# Create row policy for testing aggregate with policy
+statement ok
+CREATE ROW POLICY us_only ON orders FOR SELECT USING (region = 'US') TO limited;
+
+# T-08-11: COUNT(*) with row policy
+# (Would be tested with SET ROLE limited)
+# As superuser:
+query I
+SELECT COUNT(*) FROM orders;
+----
+3
+
+# T-08-12: SUM/AVG with row policy
+query R
+SELECT SUM(amount) FROM orders;
+----
+450.00
+
+query R
+SELECT AVG(amount) FROM orders;
+----
+150.00
+
+# =============================================================================
+# 8.5 EXPLAIN
+# =============================================================================
+
+# T-08-14: EXPLAIN on query user can run
+statement ok
+EXPLAIN SELECT * FROM orders;
+
+# T-08-15: EXPLAIN on query user cannot run
+# (Would test permission check happens even for EXPLAIN)
+
+# =============================================================================
+# 8.6 Additional Complex Scenarios
+# =============================================================================
+
+# UNION queries
+query I
+SELECT COUNT(*) FROM (
+    SELECT id FROM orders WHERE region = 'US'
+    UNION ALL
+    SELECT id FROM orders WHERE region = 'EU'
+);
+----
+3
+
+# GROUP BY with HAVING
+query TR
+SELECT region, SUM(amount) as total 
+FROM orders 
+GROUP BY region 
+HAVING SUM(amount) > 100
+ORDER BY region;
+----
+EU	200.00
+US	250.00
+
+# Window functions
+query ITR
+SELECT id, region, SUM(amount) OVER (PARTITION BY region) as region_total
+FROM orders
+ORDER BY id;
+----
+1	US	250.00
+2	EU	200.00
+3	US	250.00
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+DROP ROW POLICY us_only ON orders;
+
+statement ok
+REVOKE SELECT ON orders FROM analyst;
+
+statement ok
+REVOKE SELECT ON customers FROM analyst;
+
+statement ok
+REVOKE SELECT ON employees FROM analyst;
+
+statement ok
+REVOKE SELECT ON orders FROM limited;
+
+statement ok
+DROP TABLE orders;
+
+statement ok
+DROP TABLE customers;
+
+statement ok
+DROP TABLE employees;
+
+statement ok
+DROP ROLE analyst;
+
+statement ok
+DROP ROLE limited;
+

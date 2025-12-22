@@ -1,0 +1,244 @@
+# name: test/sql/rbac/04_row_policies.test
+# description: Test row-level security policies
+# group: [rbac]
+# requirements: FR-14, FR-15, FR-16, FR-17, FR-18, US-8
+
+require rbac
+
+# =============================================================================
+# Setup
+# =============================================================================
+
+statement ok
+CREATE ROLE regional_sales;
+
+statement ok
+CREATE ROLE us_sales;
+
+statement ok
+CREATE ROLE eu_sales;
+
+statement ok
+CREATE ROLE all_access;
+
+statement ok
+CREATE TABLE orders (
+    id INTEGER,
+    customer VARCHAR,
+    amount DECIMAL,
+    region VARCHAR,
+    owner VARCHAR,
+    is_public BOOLEAN
+);
+
+statement ok
+INSERT INTO orders VALUES 
+    (1, 'Alice', 100.00, 'US', 'alice', false),
+    (2, 'Bob', 200.00, 'EU', 'bob', false),
+    (3, 'Charlie', 150.00, 'US', 'charlie', true),
+    (4, 'Diana', 300.00, 'EU', 'diana', false),
+    (5, 'Eve', 250.00, 'APAC', 'eve', true);
+
+statement ok
+GRANT SELECT ON orders TO regional_sales;
+
+statement ok
+GRANT SELECT ON orders TO us_sales;
+
+statement ok
+GRANT SELECT ON orders TO eu_sales;
+
+statement ok
+GRANT SELECT ON orders TO all_access;
+
+# =============================================================================
+# 4.1 CREATE ROW POLICY
+# =============================================================================
+
+# T-04-01: Create row policy with valid USING expression
+statement ok
+CREATE ROW POLICY us_only ON orders FOR SELECT USING (region = 'US') TO us_sales;
+
+# T-04-02: Create policy on non-existent table
+statement error
+CREATE ROW POLICY bad_policy ON nonexistent_table FOR SELECT USING (x = 1) TO us_sales;
+----
+Table 'nonexistent_table' does not exist
+
+# T-04-03: Create policy for non-existent role
+statement error
+CREATE ROW POLICY bad_policy ON orders FOR SELECT USING (region = 'US') TO nonexistent_role;
+----
+Role 'nonexistent_role' does not exist
+
+# T-04-04: Create policy with invalid expression (bad column)
+statement error
+CREATE ROW POLICY bad_policy ON orders FOR SELECT USING (nonexistent_column = 'US') TO us_sales;
+----
+Column 'nonexistent_column' does not exist
+
+# T-04-05: Create policy with invalid expression (syntax error)
+statement error
+CREATE ROW POLICY bad_policy ON orders FOR SELECT USING (region = ) TO us_sales;
+----
+Parser Error
+
+# T-04-06: Create policy referencing current_user()
+statement ok
+CREATE ROW POLICY owner_policy ON orders FOR SELECT USING (owner = current_user()) TO regional_sales;
+
+# T-04-07: Create policy with same name on same table
+statement error
+CREATE ROW POLICY us_only ON orders FOR SELECT USING (region = 'EU') TO eu_sales;
+----
+Policy 'us_only' already exists
+
+# Create EU policy with different name
+statement ok
+CREATE ROW POLICY eu_only ON orders FOR SELECT USING (region = 'EU') TO eu_sales;
+
+# =============================================================================
+# 4.2 DROP ROW POLICY
+# =============================================================================
+
+# Create a policy to drop
+statement ok
+CREATE ROW POLICY temp_policy ON orders FOR SELECT USING (amount > 0) TO all_access;
+
+# T-04-08: Drop existing row policy
+statement ok
+DROP ROW POLICY temp_policy ON orders;
+
+# T-04-09: Drop non-existent policy
+statement error
+DROP ROW POLICY nonexistent_policy ON orders;
+----
+Policy 'nonexistent_policy' does not exist
+
+# =============================================================================
+# 4.3 Verify policies in introspection
+# =============================================================================
+
+query TTT rowsort
+SELECT policy_name, table_name, grantee FROM duckdb_row_policies 
+WHERE table_name = 'orders'
+ORDER BY policy_name;
+----
+eu_only	orders	eu_sales
+owner_policy	orders	regional_sales
+us_only	orders	us_sales
+
+# =============================================================================
+# 4.4 Multiple Policies (OR Combination) - FR-15
+# Create additional policies to test OR combination
+# =============================================================================
+
+# T-04-14: Two policies for same role on same table should be OR'd
+statement ok
+CREATE ROW POLICY public_orders ON orders FOR SELECT USING (is_public = true) TO us_sales;
+
+# Now us_sales has two policies: region='US' OR is_public=true
+# (The actual filtering would be tested with identity switching)
+
+# Verify both policies exist
+query I
+SELECT COUNT(*) FROM duckdb_row_policies 
+WHERE table_name = 'orders' AND grantee = 'us_sales';
+----
+2
+
+# T-04-16: Create another policy to verify multiple OR
+statement ok
+CREATE ROW POLICY high_value ON orders FOR SELECT USING (amount > 200) TO us_sales;
+
+query I
+SELECT COUNT(*) FROM duckdb_row_policies 
+WHERE table_name = 'orders' AND grantee = 'us_sales';
+----
+3
+
+# =============================================================================
+# 4.5 Policy Expression Can Reference Any Column (FR-16)
+# =============================================================================
+
+# Create table with sensitive column
+statement ok
+CREATE TABLE sensitive_data (
+    id INTEGER,
+    public_info VARCHAR,
+    secret_level INTEGER,
+    content VARCHAR
+);
+
+statement ok
+CREATE ROLE limited_user;
+
+# Grant only public columns
+statement ok
+GRANT SELECT (id, public_info, content) ON sensitive_data TO limited_user;
+
+# T-04-13: Policy expression references column user can't SELECT
+# This should be allowed - policy runs with elevated privileges
+statement ok
+CREATE ROW POLICY level_filter ON sensitive_data 
+    FOR SELECT USING (secret_level <= 2) 
+    TO limited_user;
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+DROP ROW POLICY us_only ON orders;
+
+statement ok
+DROP ROW POLICY eu_only ON orders;
+
+statement ok
+DROP ROW POLICY owner_policy ON orders;
+
+statement ok
+DROP ROW POLICY public_orders ON orders;
+
+statement ok
+DROP ROW POLICY high_value ON orders;
+
+statement ok
+DROP ROW POLICY level_filter ON sensitive_data;
+
+statement ok
+REVOKE SELECT ON orders FROM regional_sales;
+
+statement ok
+REVOKE SELECT ON orders FROM us_sales;
+
+statement ok
+REVOKE SELECT ON orders FROM eu_sales;
+
+statement ok
+REVOKE SELECT ON orders FROM all_access;
+
+statement ok
+REVOKE SELECT (id, public_info, content) ON sensitive_data FROM limited_user;
+
+statement ok
+DROP TABLE orders;
+
+statement ok
+DROP TABLE sensitive_data;
+
+statement ok
+DROP ROLE regional_sales;
+
+statement ok
+DROP ROLE us_sales;
+
+statement ok
+DROP ROLE eu_sales;
+
+statement ok
+DROP ROLE all_access;
+
+statement ok
+DROP ROLE limited_user;
+

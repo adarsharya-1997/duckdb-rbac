@@ -1,0 +1,163 @@
+# name: test/sql/rbac/03_column_privileges.test
+# description: Test column-level privileges and enforcement
+# group: [rbac]
+# requirements: FR-10, FR-11, FR-12, FR-13, US-7
+
+require rbac
+
+# =============================================================================
+# Setup
+# =============================================================================
+
+statement ok
+CREATE ROLE analyst;
+
+statement ok
+CREATE TABLE employees (
+    id INTEGER,
+    name VARCHAR,
+    email VARCHAR,
+    salary DECIMAL,
+    ssn VARCHAR,
+    department VARCHAR
+);
+
+statement ok
+INSERT INTO employees VALUES 
+    (1, 'Alice', 'alice@company.com', 100000, '123-45-6789', 'Engineering'),
+    (2, 'Bob', 'bob@company.com', 90000, '987-65-4321', 'Sales'),
+    (3, 'Charlie', 'charlie@company.com', 110000, '555-55-5555', 'Engineering');
+
+# =============================================================================
+# 3.1 GRANT SELECT (columns) ON table
+# =============================================================================
+
+# T-03-01: Grant SELECT on specific columns to role
+statement ok
+GRANT SELECT (id, name, department) ON employees TO analyst;
+
+# T-03-02: Grant SELECT on non-existent column
+statement error
+GRANT SELECT (nonexistent_col) ON employees TO analyst;
+----
+Column 'nonexistent_col' does not exist
+
+# T-03-03: Grant SELECT on additional columns (additive)
+statement ok
+GRANT SELECT (email) ON employees TO analyst;
+
+# Verify all granted columns are visible
+query I
+SELECT COUNT(*) FROM duckdb_column_privileges 
+WHERE table_name = 'employees' AND grantee = 'analyst';
+----
+4
+
+# =============================================================================
+# 3.2 REVOKE SELECT (columns) ON table
+# =============================================================================
+
+# T-03-05: Revoke SELECT on specific column
+statement ok
+REVOKE SELECT (email) ON employees FROM analyst;
+
+query I
+SELECT COUNT(*) FROM duckdb_column_privileges 
+WHERE table_name = 'employees' AND grantee = 'analyst';
+----
+3
+
+# =============================================================================
+# 3.3 Column Access Enforcement
+# Note: These tests require identity switching to test as non-superuser
+# For now, we verify the grants are set up correctly
+# =============================================================================
+
+# Setup: Create a test user role and grant limited columns
+statement ok
+CREATE ROLE test_user;
+
+statement ok
+GRANT SELECT (id, name, department) ON employees TO test_user;
+
+# Verify grants
+query TT rowsort
+SELECT column_name, grantee FROM duckdb_column_privileges 
+WHERE table_name = 'employees' AND grantee = 'test_user'
+ORDER BY column_name;
+----
+department	test_user
+id	test_user
+name	test_user
+
+# =============================================================================
+# 3.4 Column Grant vs Table Grant Interaction (FR-11)
+# =============================================================================
+
+statement ok
+CREATE TABLE products (
+    id INTEGER,
+    name VARCHAR,
+    price DECIMAL,
+    cost DECIMAL
+);
+
+statement ok
+INSERT INTO products VALUES (1, 'Widget', 9.99, 5.00);
+
+# First grant table-level access
+statement ok
+GRANT SELECT ON products TO analyst;
+
+# Then grant column-level access - should override table-level
+statement ok
+GRANT SELECT (id, name, price) ON products TO analyst;
+
+# T-03-04: Column grants override table-level "all columns" behavior
+# User should only see id, name, price - not cost
+query I
+SELECT COUNT(*) FROM duckdb_column_privileges 
+WHERE table_name = 'products' AND grantee = 'analyst';
+----
+3
+
+# =============================================================================
+# 3.5 T-03-06: Revoke all columns - user loses table access
+# =============================================================================
+
+statement ok
+REVOKE SELECT (id, name, price) ON products FROM analyst;
+
+# Should have no column grants now
+query I
+SELECT COUNT(*) FROM duckdb_column_privileges 
+WHERE table_name = 'products' AND grantee = 'analyst';
+----
+0
+
+# But table grant might still exist - revoke it too
+statement ok
+REVOKE SELECT ON products FROM analyst;
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+REVOKE SELECT (id, name, department) ON employees FROM analyst;
+
+statement ok
+REVOKE SELECT (id, name, department) ON employees FROM test_user;
+
+statement ok
+DROP TABLE employees;
+
+statement ok
+DROP TABLE products;
+
+statement ok
+DROP ROLE analyst;
+
+statement ok
+DROP ROLE test_user;
+

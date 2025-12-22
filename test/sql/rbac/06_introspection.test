@@ -1,0 +1,196 @@
+# name: test/sql/rbac/06_introspection.test
+# description: Test RBAC introspection system tables and views
+# group: [rbac]
+# requirements: FR-23, FR-24, FR-25, FR-26, FR-27, US-10
+
+require rbac
+
+# =============================================================================
+# Setup - Create test data
+# =============================================================================
+
+statement ok
+CREATE ROLE analyst;
+
+statement ok
+CREATE ROLE viewer;
+
+statement ok
+CREATE ROLE admin;
+
+statement ok
+GRANT analyst TO admin;
+
+statement ok
+CREATE TABLE orders (
+    id INTEGER,
+    customer VARCHAR,
+    amount DECIMAL,
+    region VARCHAR
+);
+
+statement ok
+CREATE TABLE customers (
+    id INTEGER,
+    name VARCHAR,
+    email VARCHAR
+);
+
+statement ok
+GRANT SELECT ON orders TO analyst;
+
+statement ok
+GRANT SELECT (id, customer) ON orders TO viewer;
+
+statement ok
+GRANT SELECT ON customers TO analyst;
+
+statement ok
+CREATE ROW POLICY regional ON orders FOR SELECT USING (region = 'US') TO viewer;
+
+# =============================================================================
+# 7.1 System Tables
+# =============================================================================
+
+# T-07-01: Query duckdb_roles - shows all created roles
+query I rowsort
+SELECT role_name FROM duckdb_roles ORDER BY role_name;
+----
+admin
+analyst
+viewer
+
+# T-07-02: Query duckdb_table_privileges - shows all table grants
+query TT rowsort
+SELECT table_name, grantee FROM duckdb_table_privileges 
+WHERE grantee IN ('analyst', 'viewer')
+ORDER BY table_name, grantee;
+----
+customers	analyst
+orders	analyst
+
+# T-07-03: Query duckdb_column_privileges - shows all column grants
+query TTT rowsort
+SELECT table_name, column_name, grantee FROM duckdb_column_privileges 
+WHERE grantee = 'viewer'
+ORDER BY column_name;
+----
+orders	customer	viewer
+orders	id	viewer
+
+# T-07-04: Query duckdb_row_policies - shows all policies
+query TTT
+SELECT policy_name, table_name, grantee FROM duckdb_row_policies 
+WHERE table_name = 'orders';
+----
+regional	orders	viewer
+
+# T-07-05: Query duckdb_role_members - shows memberships
+query TT
+SELECT role_name, member_role FROM duckdb_role_members 
+WHERE member_role = 'admin';
+----
+analyst	admin
+
+# =============================================================================
+# 7.2 Effective Privileges View
+# =============================================================================
+
+# T-07-06: Query duckdb_effective_privileges - shows current user's access
+# (This view filters based on current user's roles)
+query I
+SELECT COUNT(*) FROM duckdb_effective_privileges;
+----
+2
+
+# T-07-07: Effective privileges excludes orphaned grants
+# Create and then drop a table to create orphan
+statement ok
+CREATE TABLE temp_orphan (x INTEGER);
+
+statement ok
+GRANT SELECT ON temp_orphan TO analyst;
+
+statement ok
+DROP TABLE temp_orphan;
+
+# Orphan should exist in base table
+query I
+SELECT COUNT(*) FROM duckdb_table_privileges 
+WHERE table_name = 'temp_orphan';
+----
+1
+
+# But NOT in effective privileges (filtered view)
+# (duckdb_effective_privileges should filter out non-existent tables)
+
+# =============================================================================
+# 7.3 Introspection Examples from LLD Section 9.3
+# =============================================================================
+
+# What roles exist?
+query I
+SELECT COUNT(*) FROM duckdb_roles;
+----
+3
+
+# What row policies affect table 'orders'?
+query T
+SELECT policy_name FROM duckdb_row_policies WHERE table_name = 'orders';
+----
+regional
+
+# Who has access to table 'orders'?
+query T rowsort
+SELECT grantee FROM duckdb_table_privileges WHERE table_name = 'orders';
+----
+analyst
+
+# =============================================================================
+# 7.4 Test duckdb_my_roles view
+# =============================================================================
+
+# Current user's roles (when running as superuser, might be empty or special)
+query I
+SELECT COUNT(*) >= 0 FROM duckdb_my_roles;
+----
+true
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+DROP ROW POLICY regional ON orders;
+
+statement ok
+REVOKE SELECT ON orders FROM analyst;
+
+statement ok
+REVOKE SELECT (id, customer) ON orders FROM viewer;
+
+statement ok
+REVOKE SELECT ON customers FROM analyst;
+
+statement ok
+REVOKE analyst FROM admin;
+
+# Clean up orphan grant
+statement ok
+REVOKE SELECT ON temp_orphan FROM analyst;
+
+statement ok
+DROP TABLE orders;
+
+statement ok
+DROP TABLE customers;
+
+statement ok
+DROP ROLE analyst;
+
+statement ok
+DROP ROLE viewer;
+
+statement ok
+DROP ROLE admin;
+

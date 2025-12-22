@@ -1,0 +1,162 @@
+# name: test/sql/rbac/01_roles.test
+# description: Test role management - CREATE/DROP ROLE, membership
+# group: [rbac]
+# requirements: FR-1, FR-2, FR-3, FR-4, FR-5, US-5
+
+require rbac
+
+# =============================================================================
+# 1.1 CREATE ROLE
+# =============================================================================
+
+# T-01-01: Create a new role with a valid name
+statement ok
+CREATE ROLE analyst;
+
+# T-01-02: Create a role that already exists
+statement error
+CREATE ROLE analyst;
+----
+Role 'analyst' already exists
+
+# T-01-03: Create role with uppercase name (case-insensitive)
+statement ok
+CREATE ROLE VIEWER;
+
+# T-01-04: Verify roles are stored lowercase
+query I
+SELECT role_name FROM duckdb_roles WHERE role_name = 'viewer';
+----
+viewer
+
+# Create additional roles for later tests
+statement ok
+CREATE ROLE data_access;
+
+statement ok
+CREATE ROLE power_user;
+
+statement ok
+CREATE ROLE regional_sales;
+
+# =============================================================================
+# 1.2 DROP ROLE
+# =============================================================================
+
+# Create a role specifically to drop
+statement ok
+CREATE ROLE to_be_dropped;
+
+# T-01-05: Drop an existing role with no grants
+statement ok
+DROP ROLE to_be_dropped;
+
+# T-01-06: Drop a role that doesn't exist
+statement error
+DROP ROLE nonexistent_role;
+----
+Role 'nonexistent_role' does not exist
+
+# =============================================================================
+# 1.3 DROP ROLE with existing grants (should fail)
+# =============================================================================
+
+# Setup: Create table and grant to test DROP restriction
+statement ok
+CREATE TABLE test_orders (id INTEGER, amount DECIMAL);
+
+statement ok
+GRANT SELECT ON test_orders TO analyst;
+
+# T-01-07: Drop a role that has table grants
+statement error
+DROP ROLE analyst;
+----
+Cannot drop role 'analyst': role has existing grants
+
+# Clean up the grant
+statement ok
+REVOKE SELECT ON test_orders FROM analyst;
+
+# T-01-08: Test with column grants
+statement ok
+GRANT SELECT (id) ON test_orders TO analyst;
+
+statement error
+DROP ROLE analyst;
+----
+Cannot drop role 'analyst': role has existing grants
+
+statement ok
+REVOKE SELECT (id) ON test_orders FROM analyst;
+
+# T-01-09: Test with row policies
+statement ok
+CREATE ROW POLICY test_policy ON test_orders FOR SELECT USING (amount > 0) TO analyst;
+
+statement error
+DROP ROLE analyst;
+----
+Cannot drop role 'analyst': role has existing grants
+
+statement ok
+DROP ROW POLICY test_policy ON test_orders;
+
+# =============================================================================
+# 1.4 Role Membership (GRANT role TO role)
+# =============================================================================
+
+# T-01-11: Grant role A to role B (both exist)
+statement ok
+GRANT data_access TO power_user;
+
+# T-01-12: Grant role to non-existent member role
+statement error
+GRANT data_access TO nonexistent_member;
+----
+Role 'nonexistent_member' does not exist
+
+# T-01-13: Grant non-existent role to a member
+statement error
+GRANT nonexistent_role TO power_user;
+----
+Role 'nonexistent_role' does not exist
+
+# T-01-14: Grant same membership twice (should be idempotent)
+statement ok
+GRANT data_access TO power_user;
+
+# T-01-10: Drop a role that is a member of another role
+statement ok
+CREATE ROLE member_to_drop;
+
+statement ok
+GRANT analyst TO member_to_drop;
+
+statement error
+DROP ROLE member_to_drop;
+----
+Cannot drop role 'member_to_drop': role has existing grants
+
+# Clean up
+statement ok
+REVOKE analyst FROM member_to_drop;
+
+statement ok
+DROP ROLE member_to_drop;
+
+# T-01-15: Revoke membership that exists
+statement ok
+REVOKE data_access FROM power_user;
+
+# T-01-16: Revoke membership that doesn't exist (should be idempotent or error)
+statement ok
+REVOKE data_access FROM power_user;
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+DROP TABLE test_orders;
+

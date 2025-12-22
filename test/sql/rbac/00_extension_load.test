@@ -1,0 +1,41 @@
+# name: test/sql/rbac/00_extension_load.test
+# description: Test RBAC extension loading and basic functions
+# group: [rbac]
+# requirements: FR-19, FR-22
+
+# Before we load the extension, RBAC functions should not exist
+statement error
+SELECT current_user();
+----
+Catalog Error
+
+statement error
+CREATE ROLE test_role;
+----
+Parser Error
+
+# Load the RBAC extension
+require rbac
+
+# Extension should now be loaded - test current_user() function
+# T-10-01: current_user() returns the set user name
+# When no identity is set, should return default (superuser mode)
+query I
+SELECT current_user() IS NOT NULL;
+----
+true
+
+# T-10-04: current_roles() returns the set roles  
+query I
+SELECT current_roles() IS NOT NULL;
+----
+true
+
+# T-05-08, T-05-09: No identity set - treated as superuser
+# Superuser should be able to create roles without restriction
+statement ok
+CREATE ROLE extension_test_role;
+
+statement ok
+DROP ROLE extension_test_role;
+

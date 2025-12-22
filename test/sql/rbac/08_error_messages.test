@@ -1,0 +1,136 @@
+# name: test/sql/rbac/08_error_messages.test
+# description: Test RBAC error messages are clear and helpful
+# group: [rbac]
+# requirements: US-4, NFR-2
+
+require rbac
+
+# =============================================================================
+# Setup
+# =============================================================================
+
+statement ok
+CREATE ROLE analyst;
+
+statement ok
+CREATE TABLE orders (id INTEGER, amount DECIMAL);
+
+# =============================================================================
+# Role Errors
+# =============================================================================
+
+# Role already exists
+statement error
+CREATE ROLE analyst;
+----
+Role 'analyst' already exists
+
+# Role does not exist
+statement error
+DROP ROLE nonexistent;
+----
+Role 'nonexistent' does not exist
+
+# Role does not exist for grant
+statement error
+GRANT SELECT ON orders TO nonexistent;
+----
+Role 'nonexistent' does not exist
+
+# Role does not exist for membership
+statement error
+GRANT analyst TO nonexistent;
+----
+Role 'nonexistent' does not exist
+
+statement error
+GRANT nonexistent TO analyst;
+----
+Role 'nonexistent' does not exist
+
+# =============================================================================
+# Table Errors
+# =============================================================================
+
+# Table does not exist for grant
+statement error
+GRANT SELECT ON nonexistent TO analyst;
+----
+Table 'nonexistent' does not exist
+
+# =============================================================================
+# Column Errors
+# =============================================================================
+
+# Column does not exist
+statement error
+GRANT SELECT (nonexistent_col) ON orders TO analyst;
+----
+Column 'nonexistent_col' does not exist
+
+# =============================================================================
+# Policy Errors
+# =============================================================================
+
+# Policy already exists
+statement ok
+CREATE ROW POLICY test_policy ON orders FOR SELECT USING (amount > 0) TO analyst;
+
+statement error
+CREATE ROW POLICY test_policy ON orders FOR SELECT USING (amount > 0) TO analyst;
+----
+Policy 'test_policy' already exists
+
+# Policy on nonexistent table
+statement error
+CREATE ROW POLICY bad ON nonexistent FOR SELECT USING (x > 0) TO analyst;
+----
+Table 'nonexistent' does not exist
+
+# Policy for nonexistent role
+statement error
+CREATE ROW POLICY bad ON orders FOR SELECT USING (amount > 0) TO nonexistent;
+----
+Role 'nonexistent' does not exist
+
+# Policy with invalid column in expression
+statement error
+CREATE ROW POLICY bad ON orders FOR SELECT USING (nonexistent_col > 0) TO analyst;
+----
+Column 'nonexistent_col' does not exist
+
+# Drop nonexistent policy
+statement error
+DROP ROW POLICY nonexistent ON orders;
+----
+Policy 'nonexistent' does not exist
+
+# =============================================================================
+# Drop Role with Dependencies
+# =============================================================================
+
+# Cannot drop role with grants
+statement ok
+GRANT SELECT ON orders TO analyst;
+
+statement error
+DROP ROLE analyst;
+----
+Cannot drop role 'analyst': role has existing grants
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+DROP ROW POLICY test_policy ON orders;
+
+statement ok
+REVOKE SELECT ON orders FROM analyst;
+
+statement ok
+DROP TABLE orders;
+
+statement ok
+DROP ROLE analyst;
+

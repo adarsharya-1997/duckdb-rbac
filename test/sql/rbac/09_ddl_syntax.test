@@ -1,0 +1,142 @@
+# name: test/sql/rbac/09_ddl_syntax.test
+# description: Test RBAC DDL syntax parsing
+# group: [rbac]
+# requirements: DDL Syntax from LLD Section 4
+
+require rbac
+
+# =============================================================================
+# Setup - Create test objects
+# =============================================================================
+
+statement ok
+CREATE TABLE test_table (
+    id INTEGER,
+    name VARCHAR,
+    value DECIMAL
+);
+
+# =============================================================================
+# 9.1 Role DDL Syntax
+# =============================================================================
+
+# T-09-01: CREATE ROLE with valid syntax
+statement ok
+CREATE ROLE test_role_1;
+
+# T-09-02: DROP ROLE with valid syntax
+statement ok
+DROP ROLE test_role_1;
+
+# Create roles for further tests
+statement ok
+CREATE ROLE role_a;
+
+statement ok
+CREATE ROLE role_b;
+
+# T-09-08: GRANT role TO member - valid syntax
+statement ok
+GRANT role_a TO role_b;
+
+# T-09-09: REVOKE role FROM member - valid syntax
+statement ok
+REVOKE role_a FROM role_b;
+
+# =============================================================================
+# 9.2 Table Privilege DDL Syntax
+# =============================================================================
+
+# T-09-03: GRANT SELECT ON table TO role - valid syntax
+statement ok
+GRANT SELECT ON test_table TO role_a;
+
+# T-09-05: REVOKE SELECT ON table FROM role - valid syntax
+statement ok
+REVOKE SELECT ON test_table FROM role_a;
+
+# With schema prefix
+statement ok
+GRANT SELECT ON main.test_table TO role_a;
+
+statement ok
+REVOKE SELECT ON main.test_table FROM role_a;
+
+# =============================================================================
+# 9.3 Column Privilege DDL Syntax
+# =============================================================================
+
+# T-09-04: GRANT SELECT (cols) ON table TO role - valid syntax
+statement ok
+GRANT SELECT (id, name) ON test_table TO role_a;
+
+# Multiple columns in one statement
+statement ok
+GRANT SELECT (id, name, value) ON test_table TO role_b;
+
+# Revoke specific columns
+statement ok
+REVOKE SELECT (name) ON test_table FROM role_a;
+
+statement ok
+REVOKE SELECT (id) ON test_table FROM role_a;
+
+statement ok
+REVOKE SELECT (id, name, value) ON test_table FROM role_b;
+
+# =============================================================================
+# 9.4 Row Policy DDL Syntax
+# =============================================================================
+
+# T-09-06: CREATE ROW POLICY ... USING ... TO - valid syntax
+statement ok
+CREATE ROW POLICY policy_1 ON test_table FOR SELECT USING (id > 0) TO role_a;
+
+# Policy with more complex expression
+statement ok
+CREATE ROW POLICY policy_2 ON test_table FOR SELECT USING (name IS NOT NULL AND value > 100) TO role_a;
+
+# Policy with current_user()
+statement ok
+CREATE ROW POLICY policy_3 ON test_table FOR SELECT USING (name = current_user()) TO role_b;
+
+# T-09-07: DROP ROW POLICY name ON table - valid syntax
+statement ok
+DROP ROW POLICY policy_1 ON test_table;
+
+statement ok
+DROP ROW POLICY policy_2 ON test_table;
+
+statement ok
+DROP ROW POLICY policy_3 ON test_table;
+
+# =============================================================================
+# 9.5 Syntax Variations
+# =============================================================================
+
+# Case insensitivity
+statement ok
+create role CamelCase;
+
+statement ok
+CREATE ROLE lowercase;
+
+statement ok
+drop role camelcase;
+
+statement ok
+DROP ROLE LOWERCASE;
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+DROP TABLE test_table;
+
+statement ok
+DROP ROLE role_a;
+
+statement ok
+DROP ROLE role_b;
+

@@ -1,0 +1,170 @@
+# name: test/sql/rbac/02_table_privileges.test
+# description: Test table-level privileges - GRANT/REVOKE SELECT
+# group: [rbac]
+# requirements: FR-6, FR-7, FR-8, FR-9, US-6
+
+require rbac
+
+# =============================================================================
+# Setup
+# =============================================================================
+
+statement ok
+CREATE ROLE analyst;
+
+statement ok
+CREATE ROLE viewer;
+
+statement ok
+CREATE TABLE orders (
+    id INTEGER,
+    customer VARCHAR,
+    amount DECIMAL,
+    region VARCHAR
+);
+
+statement ok
+INSERT INTO orders VALUES 
+    (1, 'Alice', 100.00, 'US'),
+    (2, 'Bob', 200.00, 'EU'),
+    (3, 'Charlie', 150.00, 'US');
+
+statement ok
+CREATE TABLE customers (
+    id INTEGER,
+    name VARCHAR,
+    email VARCHAR
+);
+
+statement ok
+INSERT INTO customers VALUES
+    (1, 'Alice', 'alice@example.com'),
+    (2, 'Bob', 'bob@example.com');
+
+# =============================================================================
+# 2.1 GRANT SELECT ON table
+# =============================================================================
+
+# T-02-01: Grant SELECT on existing table to existing role
+statement ok
+GRANT SELECT ON orders TO analyst;
+
+# T-02-02: Grant SELECT on non-existent table
+statement error
+GRANT SELECT ON nonexistent_table TO analyst;
+----
+Table 'nonexistent_table' does not exist
+
+# T-02-03: Grant SELECT to non-existent role
+statement error
+GRANT SELECT ON orders TO nonexistent_role;
+----
+Role 'nonexistent_role' does not exist
+
+# T-02-04: Grant SELECT twice (idempotent - no error on duplicate)
+statement ok
+GRANT SELECT ON orders TO analyst;
+
+# T-02-05: Grant on table with schema prefix
+statement ok
+GRANT SELECT ON main.customers TO analyst;
+
+# =============================================================================
+# 2.2 REVOKE SELECT ON table
+# =============================================================================
+
+# T-02-06: Revoke SELECT that was granted
+statement ok
+REVOKE SELECT ON customers FROM analyst;
+
+# T-02-07: Revoke SELECT that was never granted (idempotent)
+statement ok
+REVOKE SELECT ON customers FROM viewer;
+
+# T-02-08: Revoke SELECT from non-existent role
+statement error
+REVOKE SELECT ON orders FROM nonexistent_role;
+----
+Role 'nonexistent_role' does not exist
+
+# =============================================================================
+# 2.3 Name-Based Grant Persistence (Survive DDL)
+# =============================================================================
+
+# Setup: Create table and grant
+statement ok
+CREATE TABLE temp_data (x INTEGER);
+
+statement ok
+GRANT SELECT ON temp_data TO analyst;
+
+# Verify grant exists in system table
+query I
+SELECT COUNT(*) FROM duckdb_table_privileges 
+WHERE table_name = 'temp_data' AND grantee = 'analyst';
+----
+1
+
+# T-02-09: Grant survives table drop/recreate
+statement ok
+DROP TABLE temp_data;
+
+# T-02-10: Grant visible as orphan after table drop
+query I
+SELECT COUNT(*) FROM duckdb_table_privileges 
+WHERE table_name = 'temp_data' AND grantee = 'analyst';
+----
+1
+
+# Recreate table with different schema
+statement ok
+CREATE TABLE temp_data (x INTEGER, y VARCHAR);
+
+statement ok
+INSERT INTO temp_data VALUES (1, 'test'), (2, 'data');
+
+# Grant should still work on new table
+# (This would be tested with actual permission enforcement)
+query I
+SELECT COUNT(*) FROM duckdb_table_privileges 
+WHERE table_name = 'temp_data' AND grantee = 'analyst';
+----
+1
+
+# =============================================================================
+# Verify grants in introspection
+# =============================================================================
+
+query II rowsort
+SELECT table_name, grantee FROM duckdb_table_privileges 
+WHERE grantee IN ('analyst', 'viewer')
+ORDER BY table_name, grantee;
+----
+orders	analyst
+temp_data	analyst
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+REVOKE SELECT ON orders FROM analyst;
+
+statement ok
+REVOKE SELECT ON temp_data FROM analyst;
+
+statement ok
+DROP TABLE orders;
+
+statement ok
+DROP TABLE customers;
+
+statement ok
+DROP TABLE temp_data;
+
+statement ok
+DROP ROLE analyst;
+
+statement ok
+DROP ROLE viewer;
+
