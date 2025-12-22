@@ -53,22 +53,33 @@ This document tracks the implementation of the RBAC extension. Each phase has:
   - Create minimal extension that catches `CREATE ROLE foo;`
   - Verify `ParserExtension::parse_function` fires when DuckDB parser fails
   - Return a simple TableFunction that prints "RBAC DDL intercepted"
+  - **Note (why change):** In DuckDB, `ParserExtension::parse_function` is only invoked for statements DuckDB fails to parse, so this spike confirms interception works for RBAC DDL and clarifies the compatibility risk if DuckDB adds native ROLE/GRANT syntax later.
   
 - [ ] **Spike 0.2: OptimizerExtension can throw exception**
   - Hook `OptimizerExtension::pre_optimize_function`
   - Throw exception on any query containing table named "blocked"
   - Verify query aborts with clean error message
+  - **Note (why change):** `pre_optimize_function` is confirmed to run before built-in optimizers and can throw; we’ll use this mechanism for permission enforcement failures.
   
 - [ ] **Spike 0.3: OptimizerExtension can inject LogicalFilter**
   - Walk plan to find `LogicalGet` nodes
   - Inject a `LogicalFilter` with hardcoded condition (e.g., `id > 0`)
   - Verify query results are filtered
+  - **Note (why change):** `LogicalFilter` exists and plan mutation is supported; we’ll reuse this for row policies, but binding a correct filter expression is the hard part (see Spike 0.5).
   
 - [ ] **Spike 0.4: ClientContextState stores identity**
   - Implement `RBACState : ClientContextState`
   - Store hardcoded user/roles in state
   - Create `current_user()` function that returns stored value
   - Verify function returns correct value
+  - **Note (why change):** DuckDB provides `ClientContext::registered_state` (`RegisteredStateManager`) and connection lifecycle callbacks (`ExtensionCallback::OnConnectionOpened/Closed`) that we can use to ensure state exists per connection.
+
+- [ ] **Spike 0.5: Bind a policy expression against a table scan**
+  - Parse a simple expression string using `Parser::ParseExpressionList`
+  - In `OptimizerExtension::pre_optimize_function`, locate a base-table `LogicalGet`
+  - Attempt to bind the parsed expression so it references the `LogicalGet` columns correctly, then inject it via `LogicalFilter`
+  - **Acceptance target:** `SELECT * FROM t` transparently becomes filtered by the injected predicate
+  - **Note (why change):** Row policy parsing is easy, but *binding* to correct `ColumnBinding`/scope during optimizer-time rewriting is the highest-risk integration point; we want this proven early.
 
 ### Acceptance Criteria
 
@@ -161,6 +172,7 @@ test/sql/rbac/00_extension_load.test - ALL PASS
 - [ ] Detect RBAC keywords: CREATE ROLE, DROP ROLE, GRANT, REVOKE, CREATE ROW POLICY, DROP ROW POLICY
 - [ ] Return `ParserExtensionParseData` with parsed statement info
 - [ ] Implement `ParserExtension::plan_function` to return TableFunction
+  - **Note (why change):** `plan_function` must return `ParserExtensionPlanResult` (TableFunction + parameters + statement properties). We should also set `modified_databases` and `return_type` appropriately so DuckDB correctly treats these as modifying statements where applicable.
 
 #### 2.2 CREATE ROLE / DROP ROLE
 - [ ] Parse `CREATE ROLE role_name`
@@ -284,7 +296,10 @@ test/sql/rbac/06_introspection.test - ALL PASS
 #### 4.2 Plan Walking
 - [ ] Walk `LogicalOperator` tree recursively
 - [ ] Find all `LogicalGet` nodes (table scans)
-- [ ] Extract table name and column IDs from each `LogicalGet`
+- [ ] Extract table identity and referenced columns from each `LogicalGet`
+  - Use `LogicalGet::GetTable()` when available (base tables); otherwise handle gracefully (table functions / non-table scans)
+  - Treat column ids as `ColumnIndex` (not plain integers) and account for rowid/virtual/nested paths
+  - **Note (why change):** In this DuckDB version `LogicalGet` stores `vector<ColumnIndex>`, and `GetTable()` can return null for non-catalog scans. Enforcement must not assume a simple `(table_name, vector<idx_t>)` model.
 
 #### 4.3 Table Access Check
 - [ ] For each table, check `duckdb_table_privileges`
@@ -296,7 +311,7 @@ test/sql/rbac/06_introspection.test - ALL PASS
 - [ ] Compute allowed columns for (table, effective_roles)
 - [ ] If table-level grant exists and NO column grants: all columns allowed
 - [ ] If column grants exist: only those columns allowed
-- [ ] Check every column in `LogicalGet.column_ids`
+- [ ] Check every referenced column in `LogicalGet` (via `GetColumnIds()`/`GetColumnName(ColumnIndex)`)
 - [ ] If forbidden column: throw `PermissionException`
 - [ ] Message format: `"User 'X' lacks SELECT privilege on column 'Y' of table 'Z'"`
 
@@ -348,9 +363,10 @@ test/sql/rbac/05_enforcement.test - ALL PASS
 
 #### 5.3 Expression Binding
 - [ ] Parse policy `filter_expression` text at query time
-- [ ] Bind against current table schema
+- [ ] Bind against the current table scan so column references resolve correctly
 - [ ] Resolve column references
 - [ ] Handle `current_user()` function in expressions
+  - **Note (why change):** Expression parsing is available (`Parser::ParseExpressionList`), but binding must produce a correct bound `Expression` over the `LogicalGet`’s bindings. This is why Spike 0.5 exists.
 
 #### 5.4 Filter Injection
 - [ ] Create `LogicalFilter` node with bound expression
