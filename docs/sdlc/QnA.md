@@ -122,7 +122,7 @@ CREATE ROW POLICY policy_name ON table_name
 
 ### Q21: What does CLS mean—column privileges, column masking, or both?
 
-**A21:** Column privileges for MVP. Query fails if user explicitly references forbidden columns. `SELECT *` silently returns only accessible columns.
+**A21:** Column privileges for MVP. Query fails if user references forbidden columns (explicitly or via `SELECT *`).
 
 ### Q22: If column masking, how are masks defined?
 
@@ -150,11 +150,13 @@ CREATE ROW POLICY policy_name ON table_name
 
 ### Q26: What's the exact behavior for column access with SELECT *?
 
-**A26:** Confirmed:
-- `SELECT *` rewrites to allowed columns silently
+**A26:** Updated after implementation research (see Q102):
+- `SELECT *` on tables with forbidden columns: **error** (DuckDB limitation—see below)
 - `SELECT a, b` where both allowed: works
 - `SELECT a, b, c` where c forbidden: error
 - No grant at all: "Permission denied"
+
+**Note:** We originally wanted `SELECT *` to silently filter to allowed columns, but DuckDB expands `*` during binding (before our optimizer extension runs). Silent filtering may be enabled in a future version if we can solve this via parser override or a DuckDB core hook.
 
 ### Q27: Should computed expressions on forbidden columns (e.g., `SELECT salary * 2`) fail?
 
@@ -370,7 +372,7 @@ Views:
 
 ### Q62: Should `SELECT *` rewrite be silent or produce a warning?
 
-**A62:** Silent rewrite (like ClickHouse).
+**A62:** Originally: silent rewrite (like ClickHouse). However, due to DuckDB's architecture (star expansion during binding), MVP will error on forbidden columns. Silent rewrite deferred to future version.
 
 ---
 
@@ -627,6 +629,7 @@ With name-based grants, the RBAC config survives the refresh cycle.
 | Built-in roles (PUBLIC) | No special roles |
 | Orphan cleanup utility | Manual cleanup if needed |
 | Default deny mode | No policy = see all |
+| Silent SELECT * filtering | DuckDB limitation—errors on forbidden columns for now |
 
 ---
 
@@ -682,7 +685,7 @@ SELECT * FROM duckdb_my_roles;              -- current user's roles
 3. **Name-based grants** survive table drop/recreate cycles
 4. **Grants are case-insensitive** for identifiers
 5. **Forbidden columns** denied anywhere in query (SELECT, WHERE, ORDER BY, etc.)
-6. **SELECT *** rewrites silently to allowed columns
+6. **SELECT *** errors if any column is forbidden (DuckDB limitation—see Q102)
 7. **Row policies OR together** when user has multiple matching policies
 8. **No policy = see all rows** (policies are opt-in restrictions)
 9. **Policy expressions see all columns** (security definer)
@@ -701,7 +704,16 @@ SELECT * FROM duckdb_my_roles;              -- current user's roles
 
 ### Q102: What's the SELECT * behavior given DuckDB expands * during binding?
 
-**A102:** We want `SELECT *` to work seamlessly (silently filter forbidden columns). This may require a minimal core change—approaches include parser override, OperatorExtension at binder level, or a new column-access callback during binding. Decision deferred until we explore DuckDB source.
+**A102:** DuckDB expands `SELECT *` to an explicit column list during binding, **before** our optimizer extension runs. This means we cannot tell whether a query was originally `SELECT *` or an explicit column list.
+
+**MVP Decision:** For MVP, if any forbidden column appears in the bound query, we **error**. This means `SELECT *` on tables with restricted columns will fail. Users must use explicit column lists.
+
+**Future:** We may enable silent `SELECT *` filtering in a later version via:
+1. Parser override (intercept SQL, rewrite `SELECT *` before DuckDB sees it)
+2. OperatorExtension at binder level (if it fires before star expansion)
+3. A minimal DuckDB core hook (column-access callback during binding)
+
+See RFC.md for detailed discussion of these approaches.
 
 ### Q103: Should policy expressions be bound at creation time or query time?
 
@@ -747,12 +759,12 @@ Not restricted to optimizer extension alone. Will explore DuckDB source to deter
 
 ### Q111: Should we add a minimal core change for column access control during binding?
 
-**A111:** Possibly. Three approaches under consideration:
+**A111:** Deferred to future version. For MVP, we accept the `SELECT *` limitation (errors on forbidden columns). Three approaches remain under consideration for later:
 1. **Parser override** — Intercept SQL, rewrite `SELECT *` to explicit allowed columns
 2. **OperatorExtension** — Hook at binder level if it fires before * expansion
 3. **New core hook** — Add column-access callback during binding
 
-Will explore DuckDB source to determine which is cleanest.
+See RFC.md for detailed discussion.
 
 ### Q112: Should GRANT/REVOKE auto-commit or be transactional?
 

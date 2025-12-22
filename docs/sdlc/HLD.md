@@ -217,8 +217,8 @@ SELECT * FROM duckdb_row_policies;
 
 | Document | Content |
 |----------|---------|
-| `rbac-prd.md` | Product requirements |
-| `rbac-design.md` | Detailed technical design |
-| `rbac-qa.md` | Requirements Q&A (112 questions) |
-| `rbac-rfc.md` | RFC for DuckDB maintainers |
+| `PRD.md` | Product requirements |
+| `LLD.md` | Detailed technical design |
+| `QnA.md` | Requirements Q&A (112 questions) |
+| `RFC.md` | RFC for DuckDB maintainers |
 

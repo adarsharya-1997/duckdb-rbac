@@ -20,8 +20,7 @@
 9. [Acceptance Criteria](#9-acceptance-criteria)
 10. [Dependencies & Constraints](#10-dependencies--constraints)
 11. [Risks](#11-risks)
-12. [Timeline](#12-timeline)
-13. [Open Questions (Resolved)](#13-open-questions-resolved)
+12. [Open Questions (Resolved)](#12-open-questions-resolved)
 
 ---
 
@@ -94,10 +93,7 @@ DuckDB has no built-in access control. Our analytics platform (TAP) embeds DuckD
 
 | Criteria | Measurement |
 |----------|-------------|
-| **Security** | Zero unauthorized data access in production |
 | **Adoption** | TAP migrates from query rewriting to RBAC |
-| **Usability** | Support team can manage permissions without code changes |
-| **Performance** | <5ms overhead per query for permission checks |
 | **Auditability** | Can answer "who can access table X?" in one query |
 
 ---
@@ -228,34 +224,27 @@ DuckDB has no built-in access control. Our analytics platform (TAP) embeds DuckD
 
 ## 7. Non-Functional Requirements
 
-### 7.1 Performance
+### 7.1 Security
 
 | ID | Requirement |
 |----|-------------|
-| NFR-1 | Permission check overhead shall be <5ms per query |
-| NFR-2 | System shall cache permission lookups per session |
+| NFR-1 | Users shall not be able to change their own identity via SQL |
+| NFR-2 | Error messages shall be detailed (no security-through-obscurity) |
 
-### 7.2 Security
-
-| ID | Requirement |
-|----|-------------|
-| NFR-3 | Users shall not be able to change their own identity via SQL |
-| NFR-4 | Error messages shall be detailed (no security-through-obscurity) |
-
-### 7.3 Compatibility
+### 7.2 Compatibility
 
 | ID | Requirement |
 |----|-------------|
-| NFR-5 | Extension shall work with DuckDB's embedded mode |
-| NFR-6 | Syntax shall mimic ClickHouse/PostgreSQL where possible |
-| NFR-7 | Grants shall survive table drop/recreate cycles |
+| NFR-3 | Extension shall work with DuckDB's embedded mode |
+| NFR-4 | Syntax shall mimic ClickHouse/PostgreSQL where possible |
+| NFR-5 | Grants shall survive table drop/recreate cycles |
 
-### 7.4 Operability
+### 7.3 Operability
 
 | ID | Requirement |
 |----|-------------|
-| NFR-8 | Grants shall be loadable from a SQL file at startup |
-| NFR-9 | Grant changes shall take effect immediately (auto-commit) |
+| NFR-6 | Grants shall be loadable from a SQL file at startup |
+| NFR-7 | Grant changes shall take effect immediately (auto-commit) |
 
 ---
 
@@ -284,14 +273,19 @@ DuckDB has no built-in access control. Our analytics platform (TAP) embeds DuckD
 | Restrictive (AND) policies | OR-only for MVP |
 | Column masking | Deny access for MVP, mask later |
 | Wildcard grants | Exact names only |
-| Silent SELECT * filtering | MVP errors on forbidden columns |
+| Subqueries in policies | Simple expressions only |
+| Built-in roles (PUBLIC) | No special roles |
+| Default deny mode | No policy = see all for MVP |
+| Silent SELECT * filtering | DuckDB limitation (see 8.3) |
 
 ### 8.3 MVP Limitations
 
 | Limitation | User Impact | Workaround |
 |------------|-------------|------------|
-| `SELECT *` with forbidden columns errors | Must use explicit column list | Query `duckdb_effective_privileges` first |
 | No role hierarchy | Duplicate grants across roles | Create shared base roles |
+| `SELECT *` errors on forbidden columns | Must use explicit column list | Query `duckdb_effective_privileges` first |
+
+**Note on SELECT * limitation:** DuckDB expands `SELECT *` to an explicit column list during binding, **before** our optimizer extension runs. This means we cannot distinguish `SELECT *` from an explicit column list at enforcement time. If any forbidden column appears in the query, it will error. We plan to enable silent `SELECT *` filtering in a future version (see `RFC.md` for potential approaches).
 
 ---
 
@@ -320,6 +314,14 @@ GIVEN a user with role 'analyst'
 AND 'analyst' has SELECT on columns (id, name) of table 'users'
 WHEN user queries SELECT id, name FROM users
 THEN query succeeds and returns 2 columns
+```
+
+```
+GIVEN a user with role 'analyst'
+AND 'analyst' has SELECT on columns (id, name) of table 'users'
+WHEN user queries SELECT * FROM users
+THEN query fails with "Permission denied on column 'ssn' of table 'users'"
+(Note: SELECT * expands to all columns during binding, triggering the error)
 ```
 
 ```
@@ -382,34 +384,18 @@ THEN query succeeds regardless of grants
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
 | DuckDB hooks insufficient | Medium | High | Validate with spikes first |
-| Performance overhead | Low | Medium | Cache permission lookups |
 | Complex queries break (CTEs, subqueries) | Medium | Medium | Extensive testing |
-| SELECT * limitation confuses users | Medium | Low | Document clearly, improve in v2 |
 
 ---
 
-## 12. Timeline
+## 12. Open Questions (Resolved)
 
-| Phase | Duration | Deliverable |
-|-------|----------|-------------|
-| **Spikes** | 1 day | Validated extension hooks work |
-| **Foundation** | 2 days | Extension loads, identity works |
-| **DDL** | 3 days | CREATE ROLE, GRANT work |
-| **Enforcement** | 3 days | Queries blocked without grants |
-| **Row Policies** | 2 days | Row filtering works |
-| **Polish** | 2 days | Introspection, error messages, edge cases |
-| **Total** | ~13 days | MVP complete |
-
----
-
-## 13. Open Questions (Resolved)
-
-These questions were resolved during requirements gathering. See `rbac-qa.md` for full discussion.
+These questions were resolved during requirements gathering. See `QnA.md` for full discussion.
 
 | Question | Resolution |
 |----------|------------|
 | External vs internal superuser? | External (app sets flag) |
-| SELECT * behavior? | MVP: error on forbidden columns |
+| SELECT * behavior? | Errors on forbidden columns (DuckDB limitation—see 8.3) |
 | Policy binding: create-time or query-time? | Query-time (like PostgreSQL) |
 | Grants tied to table OID or name? | Name (survives DDL) |
 | GRANT transaction semantics? | Auto-commit |
@@ -423,9 +409,6 @@ These questions were resolved during requirements gathering. See `rbac-qa.md` fo
 
 | Document | Purpose |
 |----------|---------|
-| `rbac-qa.md` | Full requirements Q&A (112 questions) |
-| `rbac-design.md` | Technical design document |
-| `duck/duckdb-ext-qa.md` | DuckDB extension API analysis |
-| `ch/rbac-ch-arch.md` | ClickHouse RBAC reference |
-| `pg/rbac-pg.md` | PostgreSQL RBAC reference |
+| `QnA.md` | Full requirements Q&A (112 questions) |
+| `RFC.md` | DuckDB discussion RFC with implementation approach |
 

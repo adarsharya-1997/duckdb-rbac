@@ -2,8 +2,8 @@
 
 **Version:** 1.1 (MVP - Updated with DuckDB Extension Reality)  
 **Last Updated:** December 2024  
-**Reference:** See `rbac-qa.md` for full requirements Q&A (112 questions)  
-**Extension API Reference:** See `duck/duckdb-ext-qa.md` for DuckDB extension capabilities
+**Reference:** See `QnA.md` for full requirements Q&A (112 questions)  
+**Extension API Reference:** See `RFC.md` for DuckDB extension approach
 
 ---
 
@@ -616,7 +616,7 @@ DROP ROW POLICY policy_name ON table_name;
 │  Step 4: For each column referenced, check column access        │
 │  └─▶ Compute allowed columns for user on table                  │
 │  └─▶ If column not in allowed set: Error                        │
-│  └─▶ If SELECT *, rewrite to allowed columns                    │
+│  └─▶ (SELECT * already expanded by binder - all columns checked)│
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼

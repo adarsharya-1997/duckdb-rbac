@@ -1,5 +1,9 @@
 # RFC: Role-Based Access Control (RBAC) Extension for DuckDB
 
+Discussion at: https://github.com/duckdb/duckdb/discussions/20264
+
+---
+
 DuckDB has no built-in access control mechanism. 
 
 ClickHouse does: https://clickhouse.com/docs/operations/access-rights
