@@ -2,6 +2,7 @@
 
 #include "quack_extension.hpp"
 #include "rbac_state.hpp"
+#include "rbac_optimizer.hpp"
 #include "duckdb.hpp"
 #include "duckdb/main/extension_callback_manager.hpp"
 
@@ -16,6 +17,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Register RBAC scalar functions (rbac_current_user, rbac_current_roles, rbac_is_superuser)
 	RegisterRBACScalarFunctions(loader);
+
+	// Register RBAC optimizer extension (permission checks, row policy injection)
+	RegisterRBACOptimizer(loader);
 }
 
 void QuackExtension::Load(ExtensionLoader &loader) {

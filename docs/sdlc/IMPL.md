@@ -109,7 +109,7 @@ SELECT rbac_current_user();
 
 **Note (why this matters):** DuckDB provides `ClientContext::registered_state` (`RegisteredStateManager`) and connection lifecycle callbacks (`ExtensionCallback::OnConnectionOpened/Closed`) that we can use to ensure state exists per connection.
 
-- [ ] Spike 0.4 complete
+- [x] Spike 0.4 complete
 
 ---
 
@@ -132,7 +132,7 @@ SELECT * FROM blocked;   -- Should fail with "Access denied to table 'blocked'"
 
 **Note (why this matters):** `pre_optimize_function` is confirmed to run before built-in optimizers and can throw; we'll use this mechanism for permission enforcement failures.
 
-- [ ] Spike 0.2 complete
+- [x] Spike 0.2 complete
 
 ---
 

@@ -23,3 +23,22 @@ query I
 SELECT rbac_current_roles()
 ----
 []
+
+# ===== Spike 0.2: Optimizer throws on blocked table =====
+
+# Create tables for testing
+statement ok
+CREATE TABLE allowed (id INT)
+
+statement ok
+CREATE TABLE blocked (id INT)
+
+# Allowed table should work fine
+statement ok
+SELECT * FROM allowed
+
+# Blocked table should throw PermissionException
+statement error
+SELECT * FROM blocked
+----
+Access denied to table 'blocked'
