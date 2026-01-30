@@ -232,55 +232,58 @@ static void RBACSetIdentityExecute(ClientContext &context, TableFunctionInput &d
 // System Tables Creation
 //===--------------------------------------------------------------------===//
 
+static void ExecuteOrThrow(Connection &con, const string &sql, const string &description) {
+	auto result = con.Query(sql);
+	if (result->HasError()) {
+		throw InvalidInputException("Failed to %s: %s", description, result->GetError());
+	}
+}
+
 void CreateRBACSystemTables(DatabaseInstance &db) {
 	// Create a connection to execute DDL
 	Connection con(db);
 
 	// Create duckdb_roles table
-	con.Query(R"(
+	ExecuteOrThrow(con, R"(
 		CREATE TABLE IF NOT EXISTS duckdb_roles (
-			role_name VARCHAR PRIMARY KEY,
-			created_at TIMESTAMP DEFAULT current_timestamp
+			role_name VARCHAR PRIMARY KEY
 		)
-	)");
+	)", "create duckdb_roles table");
 
 	// Create duckdb_role_members table (for user->role and role->role membership)
-	con.Query(R"(
+	ExecuteOrThrow(con, R"(
 		CREATE TABLE IF NOT EXISTS duckdb_role_members (
 			role_name VARCHAR NOT NULL,
 			member VARCHAR NOT NULL,
-			granted_at TIMESTAMP DEFAULT current_timestamp,
 			PRIMARY KEY (role_name, member)
 		)
-	)");
+	)", "create duckdb_role_members table");
 
 	// Create duckdb_table_privileges table
-	con.Query(R"(
+	ExecuteOrThrow(con, R"(
 		CREATE TABLE IF NOT EXISTS duckdb_table_privileges (
 			grantee VARCHAR NOT NULL,
 			table_schema VARCHAR NOT NULL DEFAULT 'main',
 			table_name VARCHAR NOT NULL,
 			privilege_type VARCHAR NOT NULL DEFAULT 'SELECT',
-			granted_at TIMESTAMP DEFAULT current_timestamp,
 			PRIMARY KEY (grantee, table_schema, table_name, privilege_type)
 		)
-	)");
+	)", "create duckdb_table_privileges table");
 
 	// Create duckdb_column_privileges table
-	con.Query(R"(
+	ExecuteOrThrow(con, R"(
 		CREATE TABLE IF NOT EXISTS duckdb_column_privileges (
 			grantee VARCHAR NOT NULL,
 			table_schema VARCHAR NOT NULL DEFAULT 'main',
 			table_name VARCHAR NOT NULL,
 			column_name VARCHAR NOT NULL,
 			privilege_type VARCHAR NOT NULL DEFAULT 'SELECT',
-			granted_at TIMESTAMP DEFAULT current_timestamp,
 			PRIMARY KEY (grantee, table_schema, table_name, column_name, privilege_type)
 		)
-	)");
+	)", "create duckdb_column_privileges table");
 
 	// Create duckdb_row_policies table
-	con.Query(R"(
+	ExecuteOrThrow(con, R"(
 		CREATE TABLE IF NOT EXISTS duckdb_row_policies (
 			policy_name VARCHAR NOT NULL,
 			table_schema VARCHAR NOT NULL DEFAULT 'main',
@@ -289,10 +292,9 @@ void CreateRBACSystemTables(DatabaseInstance &db) {
 			command VARCHAR NOT NULL DEFAULT 'SELECT',
 			filter_expression VARCHAR NOT NULL,
 			grantee VARCHAR NOT NULL,
-			created_at TIMESTAMP DEFAULT current_timestamp,
 			PRIMARY KEY (policy_name, table_schema, table_name)
 		)
-	)");
+	)", "create duckdb_row_policies table");
 }
 
 //===--------------------------------------------------------------------===//

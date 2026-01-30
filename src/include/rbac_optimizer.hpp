@@ -8,6 +8,7 @@ namespace duckdb {
 
 class ExtensionLoader;
 class LogicalGet;
+class ClientContext;
 
 //! RBAC Optimizer Extension - hooks into the optimizer to enforce permissions
 //! and inject row policy filters
@@ -21,19 +22,30 @@ public:
 	static void PreOptimize(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan);
 
 private:
-	//! Recursively walk the plan tree looking for LogicalGet nodes (read-only check)
-	static void WalkPlan(LogicalOperator &op);
-
 	//! Walk the plan tree with ability to modify (for filter injection)
-	static void WalkPlanWithParent(unique_ptr<LogicalOperator> &op_ptr);
+	//! context is used for permission lookups
+	static void WalkPlanWithParent(ClientContext &context, unique_ptr<LogicalOperator> &op_ptr,
+	                               const vector<string> &effective_roles, const string &user_name);
 
-	//! Inject a LogicalFilter with hardcoded expression (Spike 0.3)
-	static void InjectHardcodedFilter(unique_ptr<LogicalOperator> &op_ptr, LogicalGet &get);
+	//! Check table-level permissions
+	//! Returns true if access is allowed, throws PermissionException if denied
+	static void CheckTablePermission(ClientContext &context, const string &schema_name, const string &table_name,
+	                                 const vector<string> &effective_roles, const string &user_name);
 
-	//! Inject a LogicalFilter with parsed expression string (Spike 0.5)
+	//! Check column-level permissions
+	//! Returns the set of allowed columns, throws PermissionException if any referenced column is forbidden
+	static void CheckColumnPermissions(ClientContext &context, const string &schema_name, const string &table_name,
+	                                   LogicalGet &get, const vector<string> &effective_roles, const string &user_name);
+
+	//! Inject a LogicalFilter with parsed expression string (for row policies)
 	static void InjectParsedFilter(unique_ptr<LogicalOperator> &op_ptr, LogicalGet &get, const string &filter_expr);
 
-	//! Filter column_ids to remove a forbidden column (Spike 0.6B)
+	// ===== Spike code (kept for backward compatibility during transition) =====
+	//! Legacy: Walk without context (for spike tests)
+	static void WalkPlanWithParentLegacy(unique_ptr<LogicalOperator> &op_ptr);
+	//! Legacy: Inject hardcoded filter (Spike 0.3)
+	static void InjectHardcodedFilter(unique_ptr<LogicalOperator> &op_ptr, LogicalGet &get);
+	//! Legacy: Filter column_ids (Spike 0.6B)
 	static void FilterColumnIds(LogicalGet &get, const string &forbidden_column);
 };
 

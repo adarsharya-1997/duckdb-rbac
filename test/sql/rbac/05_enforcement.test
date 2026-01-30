@@ -178,7 +178,7 @@ GRANT data_team TO senior_analyst;
 # Verify membership exists
 query I
 SELECT COUNT(*) FROM duckdb_role_members 
-WHERE role_name = 'data_team' AND member_role = 'senior_analyst';
+WHERE role_name = 'data_team' AND member = 'senior_analyst';
 ----
 1
 

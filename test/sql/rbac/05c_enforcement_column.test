@@ -1,0 +1,125 @@
+# name: test/sql/rbac/05c_enforcement_column.test
+# description: Test column-level permission enforcement with non-superuser identity
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup: Create table with mixed access columns
+# =============================================================================
+
+statement ok
+CREATE TABLE employees (
+    id INTEGER,
+    name VARCHAR,
+    email VARCHAR,
+    salary DECIMAL,
+    ssn VARCHAR
+);
+
+statement ok
+INSERT INTO employees VALUES 
+    (1, 'Alice', 'alice@company.com', 100000, '123-45-6789'),
+    (2, 'Bob', 'bob@company.com', 90000, '987-65-4321');
+
+statement ok
+CREATE ROLE limited_access;
+
+# Grant access to only some columns (no salary, no ssn)
+statement ok
+GRANT SELECT (id, name, email) ON employees TO limited_access;
+
+# =============================================================================
+# Set non-superuser identity with limited_access role
+# =============================================================================
+
+statement ok
+SELECT * FROM rbac_set_identity('limited_user', ['limited_access'], false);
+
+# Verify identity
+query T
+SELECT rbac_current_user();
+----
+limited_user
+
+query I
+SELECT rbac_is_superuser();
+----
+false
+
+# =============================================================================
+# Test: Column-level enforcement
+# =============================================================================
+
+# T-03-07: SELECT allowed columns - should succeed
+query ITT
+SELECT id, name, email FROM employees ORDER BY id;
+----
+1	Alice	alice@company.com
+2	Bob	bob@company.com
+
+# T-03-08: SELECT forbidden column explicitly - should fail
+statement error
+SELECT salary FROM employees;
+----
+lacks SELECT privilege on column 'salary'
+
+# T-03-09: SELECT * with forbidden columns - should fail (MVP limitation)
+statement error
+SELECT * FROM employees;
+----
+lacks SELECT privilege on column
+
+# T-03-10: Forbidden column in WHERE clause - should fail
+statement error
+SELECT id, name FROM employees WHERE salary > 95000;
+----
+lacks SELECT privilege on column 'salary'
+
+# T-03-11: Forbidden column in ORDER BY - should fail
+statement error
+SELECT id, name FROM employees ORDER BY salary;
+----
+lacks SELECT privilege on column 'salary'
+
+# T-03-12: Mix of allowed and forbidden columns - should fail
+statement error
+SELECT id, name, ssn FROM employees;
+----
+lacks SELECT privilege on column 'ssn'
+
+# =============================================================================
+# Test: Allowed queries with column subset
+# =============================================================================
+
+# COUNT on allowed table
+query I
+SELECT COUNT(*) FROM employees;
+----
+2
+
+# Filter on allowed column
+query IT
+SELECT id, name FROM employees WHERE id = 1;
+----
+1	Alice
+
+# Order by allowed column
+query IT
+SELECT id, name FROM employees ORDER BY name;
+----
+1	Alice
+2	Bob
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+REVOKE SELECT (id, name, email) ON employees FROM limited_access;
+
+statement ok
+DROP TABLE employees;
+
+statement ok
+DROP ROLE limited_access;

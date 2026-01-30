@@ -1,0 +1,89 @@
+# name: test/sql/rbac/05d_enforcement_inherited.test
+# description: Test permission enforcement with inherited roles
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup: Create role hierarchy and tables
+# =============================================================================
+
+statement ok
+CREATE TABLE data_table (id INTEGER, value VARCHAR);
+
+statement ok
+INSERT INTO data_table VALUES (1, 'data1'), (2, 'data2');
+
+statement ok
+CREATE TABLE secret_table (id INTEGER, secret VARCHAR);
+
+statement ok
+INSERT INTO secret_table VALUES (1, 'classified');
+
+# Create role hierarchy: user has 'child_role' which inherits from 'parent_role'
+statement ok
+CREATE ROLE parent_role;
+
+statement ok
+CREATE ROLE child_role;
+
+# child_role inherits from parent_role
+statement ok
+GRANT parent_role TO child_role;
+
+# parent_role has access to data_table
+statement ok
+GRANT SELECT ON data_table TO parent_role;
+
+# =============================================================================
+# Set identity with only child_role (should inherit parent_role's grants)
+# =============================================================================
+
+statement ok
+SELECT * FROM rbac_set_identity('inherited_user', ['child_role'], false);
+
+# Verify effective roles include both child_role and parent_role
+query T
+SELECT UNNEST(rbac_effective_roles()) AS role ORDER BY role;
+----
+child_role
+parent_role
+
+# =============================================================================
+# Test: Inherited permissions
+# =============================================================================
+
+# T-06-04: Access via inherited role should succeed
+query IT
+SELECT * FROM data_table ORDER BY id;
+----
+1	data1
+2	data2
+
+# T-06-05: Access to table without grant (even via inheritance) should fail
+statement error
+SELECT * FROM secret_table;
+----
+lacks SELECT privilege on table
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+REVOKE SELECT ON data_table FROM parent_role;
+
+statement ok
+REVOKE parent_role FROM child_role;
+
+statement ok
+DROP TABLE data_table;
+
+statement ok
+DROP TABLE secret_table;
+
+statement ok
+DROP ROLE child_role;
+
+statement ok
+DROP ROLE parent_role;

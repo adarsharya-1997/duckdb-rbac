@@ -1,0 +1,101 @@
+# name: test/sql/rbac/05b_enforcement_table.test
+# description: Test table-level permission enforcement with non-superuser identity
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup: Create tables and roles
+# =============================================================================
+
+statement ok
+CREATE TABLE allowed_table (id INTEGER, data VARCHAR);
+
+statement ok
+INSERT INTO allowed_table VALUES (1, 'public data'), (2, 'more data');
+
+statement ok
+CREATE TABLE forbidden_table (id INTEGER, secret VARCHAR);
+
+statement ok
+INSERT INTO forbidden_table VALUES (1, 'top secret');
+
+statement ok
+CREATE ROLE test_role;
+
+# Grant access to allowed_table only
+statement ok
+GRANT SELECT ON allowed_table TO test_role;
+
+# =============================================================================
+# Set non-superuser identity with test_role
+# =============================================================================
+
+statement ok
+SELECT * FROM rbac_set_identity('test_user', ['test_role'], false);
+
+# Verify identity is set correctly
+query T
+SELECT rbac_current_user();
+----
+test_user
+
+query I
+SELECT rbac_is_superuser();
+----
+false
+
+# =============================================================================
+# Test: Table-level enforcement
+# =============================================================================
+
+# T-06-01: Query allowed table - should succeed
+query II
+SELECT * FROM allowed_table ORDER BY id;
+----
+1	public data
+2	more data
+
+# T-06-02: Query forbidden table - should fail
+statement error
+SELECT * FROM forbidden_table;
+----
+lacks SELECT privilege on table
+
+# T-06-03: Query with explicit column list on forbidden table - should still fail
+statement error
+SELECT id FROM forbidden_table;
+----
+lacks SELECT privilege on table
+
+# T-06-04: Query non-existent table (normal DuckDB error, not RBAC)
+statement error
+SELECT * FROM nonexistent_table;
+----
+Table with name nonexistent_table does not exist
+
+# =============================================================================
+# Test: JOIN with allowed and forbidden tables
+# =============================================================================
+
+# Joining with forbidden table should fail
+statement error
+SELECT a.id FROM allowed_table a JOIN forbidden_table f ON a.id = f.id;
+----
+lacks SELECT privilege on table
+
+# =============================================================================
+# Cleanup (superuser can't be restored, but we can clean up objects)
+# =============================================================================
+
+statement ok
+REVOKE SELECT ON allowed_table FROM test_role;
+
+statement ok
+DROP TABLE allowed_table;
+
+statement ok
+DROP TABLE forbidden_table;
+
+statement ok
+DROP ROLE test_role;

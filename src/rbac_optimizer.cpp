@@ -1,4 +1,5 @@
 #include "rbac_optimizer.hpp"
+#include "rbac_state.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
@@ -12,19 +13,18 @@
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/comparison_expression.hpp"
+#include "duckdb/main/connection.hpp"
+#include "duckdb/main/materialized_query_result.hpp"
 
 namespace duckdb {
 
 //===--------------------------------------------------------------------===//
-// Expression Binding Helper (Spike 0.5)
+// Expression Binding Helper (for row policies)
 //===--------------------------------------------------------------------===//
 
-// Simple expression binder that converts ParsedExpression to bound Expression
-// for use with a specific LogicalGet. Only handles simple cases needed for row policies.
 class SimpleExpressionBinder {
 public:
 	SimpleExpressionBinder(LogicalGet &get) : get(get) {
-		// Build column name -> index map
 		for (idx_t i = 0; i < get.names.size(); i++) {
 			column_map[get.names[i]] = i;
 		}
@@ -46,12 +46,10 @@ public:
 
 private:
 	unique_ptr<Expression> BindColumnRef(ColumnRefExpression &expr) {
-		// Get column name (handle both qualified and unqualified)
 		string col_name;
 		if (expr.column_names.size() == 1) {
 			col_name = expr.column_names[0];
 		} else if (expr.column_names.size() >= 2) {
-			// Take last component (column name)
 			col_name = expr.column_names.back();
 		} else {
 			throw BinderException("Invalid column reference");
@@ -89,17 +87,24 @@ private:
 	case_insensitive_map_t<idx_t> column_map;
 };
 
-// Parse and bind an expression string against a LogicalGet
 static unique_ptr<Expression> ParseAndBindExpression(const string &expr_str, LogicalGet &get) {
-	// Parse the expression
 	auto expressions = Parser::ParseExpressionList(expr_str);
 	if (expressions.empty()) {
 		throw BinderException("Failed to parse expression: %s", expr_str);
 	}
-
-	// Bind the first expression
 	SimpleExpressionBinder binder(get);
 	return binder.Bind(*expressions[0]);
+}
+
+// Helper to execute SQL and check for rows
+static bool QueryHasRows(ClientContext &context, const string &sql) {
+	Connection con(*context.db);
+	auto result = con.Query(sql);
+	if (result->HasError()) {
+		return false;
+	}
+	auto &mat_result = result->Cast<MaterializedQueryResult>();
+	return mat_result.RowCount() > 0;
 }
 
 //===--------------------------------------------------------------------===//
@@ -113,81 +118,226 @@ OptimizerExtension RBACOptimizerExtension::Create() {
 }
 
 void RBACOptimizerExtension::PreOptimize(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan) {
-	// Walk the plan tree to check permissions and inject filters
-	WalkPlanWithParent(plan);
-}
+	auto &context = input.context;
 
-void RBACOptimizerExtension::WalkPlan(LogicalOperator &op) {
-	// Check if this is a table scan (LogicalGet)
-	if (op.type == LogicalOperatorType::LOGICAL_GET) {
-		auto &get = op.Cast<LogicalGet>();
+	// Get RBAC state
+	auto rbac_state = RBACState::Get(context);
 
-		// Try to get the table being scanned
-		auto table = get.GetTable();
-		if (table) {
-			string table_name = table->name;
-
-			// Spike 0.2: Block access to table named "blocked"
-			if (table_name == "blocked") {
-				throw PermissionException("Access denied to table 'blocked'");
-			}
-		}
+	// Superuser bypasses ALL permission checks (FR-21)
+	if (rbac_state->is_superuser) {
+		// Still run legacy spike code for spike tests
+		WalkPlanWithParentLegacy(plan);
+		return;
 	}
 
-	// Recursively check all children
-	for (auto &child : op.children) {
-		WalkPlan(*child);
-	}
+	// Get effective roles for permission checking
+	auto effective_roles = RBACState::GetEffectiveRoles(context);
+	string user_name = rbac_state->user_name;
+
+	// Walk the plan and check permissions
+	WalkPlanWithParent(context, plan, effective_roles, user_name);
 }
 
-void RBACOptimizerExtension::WalkPlanWithParent(unique_ptr<LogicalOperator> &op_ptr) {
+// Check if a table is an RBAC system table (should be readable by anyone)
+static bool IsRBACSystemTable(const string &table_name) {
+	return table_name == "duckdb_roles" ||
+	       table_name == "duckdb_role_members" ||
+	       table_name == "duckdb_table_privileges" ||
+	       table_name == "duckdb_column_privileges" ||
+	       table_name == "duckdb_row_policies";
+}
+
+void RBACOptimizerExtension::WalkPlanWithParent(ClientContext &context, unique_ptr<LogicalOperator> &op_ptr,
+                                                 const vector<string> &effective_roles, const string &user_name) {
 	auto &op = *op_ptr;
 
-	// Check if this is a table scan (LogicalGet)
 	if (op.type == LogicalOperatorType::LOGICAL_GET) {
 		auto &get = op.Cast<LogicalGet>();
-
-		// Try to get the table being scanned
 		auto table = get.GetTable();
+
 		if (table) {
 			string table_name = table->name;
+			string schema_name = table->ParentSchema().name;
 
-			// Spike 0.2: Block access to table named "blocked"
-			if (table_name == "blocked") {
-				throw PermissionException("Access denied to table 'blocked'");
-			}
-
-			// Spike 0.3: Inject filter for table named "filtered_table" (hardcoded expression)
-			if (table_name == "filtered_table") {
-				InjectHardcodedFilter(op_ptr, get);
-				// After injection, op_ptr now points to the filter, return
+			// Skip permission checks on RBAC system tables (readable by anyone per Q104)
+			if (IsRBACSystemTable(table_name)) {
+				// System tables are always accessible
 				return;
 			}
 
-			// Spike 0.5: Inject filter for table named "policy_test" (parsed expression)
+			// Check table-level permission
+			CheckTablePermission(context, schema_name, table_name, effective_roles, user_name);
+
+			// Check column-level permissions
+			CheckColumnPermissions(context, schema_name, table_name, get, effective_roles, user_name);
+
+			// TODO (Phase 5): Inject row policy filters here
+		}
+	}
+
+	// Recursively process children
+	for (auto &child : op.children) {
+		WalkPlanWithParent(context, child, effective_roles, user_name);
+	}
+}
+
+void RBACOptimizerExtension::CheckTablePermission(ClientContext &context, const string &schema_name,
+                                                   const string &table_name, const vector<string> &effective_roles,
+                                                   const string &user_name) {
+	// Build IN clause for effective roles
+	if (effective_roles.empty()) {
+		throw PermissionException("User '%s' lacks SELECT privilege on table '%s.%s'",
+		                          user_name, schema_name, table_name);
+	}
+
+	string roles_in = "";
+	for (idx_t i = 0; i < effective_roles.size(); i++) {
+		if (i > 0) roles_in += ", ";
+		roles_in += "'" + StringUtil::Replace(effective_roles[i], "'", "''") + "'";
+	}
+
+	// Check table-level grant
+	string sql = StringUtil::Format(
+	    "SELECT 1 FROM duckdb_table_privileges "
+	    "WHERE table_schema = '%s' AND table_name = '%s' AND grantee IN (%s)",
+	    StringUtil::Replace(schema_name, "'", "''"),
+	    StringUtil::Replace(table_name, "'", "''"),
+	    roles_in);
+
+	if (QueryHasRows(context, sql)) {
+		return; // Table-level access granted
+	}
+
+	// Check if there are any column-level grants (partial access is OK)
+	sql = StringUtil::Format(
+	    "SELECT 1 FROM duckdb_column_privileges "
+	    "WHERE table_schema = '%s' AND table_name = '%s' AND grantee IN (%s)",
+	    StringUtil::Replace(schema_name, "'", "''"),
+	    StringUtil::Replace(table_name, "'", "''"),
+	    roles_in);
+
+	if (QueryHasRows(context, sql)) {
+		return; // Column-level access exists - will be checked in CheckColumnPermissions
+	}
+
+	// No access at all
+	throw PermissionException("User '%s' lacks SELECT privilege on table '%s.%s'",
+	                          user_name, schema_name, table_name);
+}
+
+void RBACOptimizerExtension::CheckColumnPermissions(ClientContext &context, const string &schema_name,
+                                                     const string &table_name, LogicalGet &get,
+                                                     const vector<string> &effective_roles, const string &user_name) {
+	if (effective_roles.empty()) {
+		return; // Already handled in CheckTablePermission
+	}
+
+	string roles_in = "";
+	for (idx_t i = 0; i < effective_roles.size(); i++) {
+		if (i > 0) roles_in += ", ";
+		roles_in += "'" + StringUtil::Replace(effective_roles[i], "'", "''") + "'";
+	}
+
+	// Check if user has table-level grant (all columns allowed)
+	string sql = StringUtil::Format(
+	    "SELECT 1 FROM duckdb_table_privileges "
+	    "WHERE table_schema = '%s' AND table_name = '%s' AND grantee IN (%s)",
+	    StringUtil::Replace(schema_name, "'", "''"),
+	    StringUtil::Replace(table_name, "'", "''"),
+	    roles_in);
+
+	if (QueryHasRows(context, sql)) {
+		// Table-level grant exists - all columns allowed
+		return;
+	}
+
+	// Column-level access: build set of allowed columns
+	sql = StringUtil::Format(
+	    "SELECT column_name FROM duckdb_column_privileges "
+	    "WHERE table_schema = '%s' AND table_name = '%s' AND grantee IN (%s)",
+	    StringUtil::Replace(schema_name, "'", "''"),
+	    StringUtil::Replace(table_name, "'", "''"),
+	    roles_in);
+
+	Connection con(*context.db);
+	auto result = con.Query(sql);
+
+	unordered_set<string> allowed_columns;
+	if (!result->HasError()) {
+		for (auto &row : *result) {
+			allowed_columns.insert(row.GetValue<string>(0));
+		}
+	}
+
+	// Check each column referenced in the LogicalGet
+	auto &col_ids = get.GetColumnIds();
+	for (auto &col_id : col_ids) {
+		idx_t col_idx = col_id.GetPrimaryIndex();
+		if (col_idx >= get.names.size()) {
+			continue; // Skip system columns
+		}
+		string col_name = get.names[col_idx];
+
+		if (allowed_columns.find(col_name) == allowed_columns.end()) {
+			throw PermissionException("User '%s' lacks SELECT privilege on column '%s' of table '%s.%s'",
+			                          user_name, col_name, schema_name, table_name);
+		}
+	}
+}
+
+void RBACOptimizerExtension::InjectParsedFilter(unique_ptr<LogicalOperator> &op_ptr, LogicalGet &get,
+                                                 const string &filter_expr) {
+	auto bound_expr = ParseAndBindExpression(filter_expr, get);
+	auto filter = make_uniq<LogicalFilter>(std::move(bound_expr));
+	filter->children.push_back(std::move(op_ptr));
+	op_ptr = std::move(filter);
+}
+
+//===--------------------------------------------------------------------===//
+// Legacy Spike Code (kept for spike tests during transition)
+//===--------------------------------------------------------------------===//
+
+void RBACOptimizerExtension::WalkPlanWithParentLegacy(unique_ptr<LogicalOperator> &op_ptr) {
+	auto &op = *op_ptr;
+
+	if (op.type == LogicalOperatorType::LOGICAL_GET) {
+		auto &get = op.Cast<LogicalGet>();
+		auto table = get.GetTable();
+
+		if (table) {
+			string table_name = table->name;
+
+			// Spike 0.2: Block access to table named "blocked"
+			if (table_name == "blocked") {
+				throw PermissionException("Access denied to table 'blocked'");
+			}
+
+			// Spike 0.3: Inject filter for "filtered_table"
+			if (table_name == "filtered_table") {
+				InjectHardcodedFilter(op_ptr, get);
+				return;
+			}
+
+			// Spike 0.5: Inject parsed filter for "policy_test"
 			if (table_name == "policy_test") {
 				InjectParsedFilter(op_ptr, get, "id > 0");
 				return;
 			}
 
-			// Spike 0.5 error case: bad column reference
+			// Spike 0.5: bad column reference
 			if (table_name == "policy_bad_column") {
 				InjectParsedFilter(op_ptr, get, "nonexistent_column > 0");
 				return;
 			}
 
-			// Spike 0.5: more complex expression with name column
+			// Spike 0.5: string filter
 			if (table_name == "policy_string_filter") {
 				InjectParsedFilter(op_ptr, get, "status = 'active'");
 				return;
 			}
 
-			// ===== Spike 0.6: SELECT * Column-Level Permission Feasibility =====
-
-			// Part A: Log what columns the optimizer sees for col_test
+			// Spike 0.6A: Log columns for col_test
 			if (table_name == "col_test") {
-				// Just log - don't modify anything
-				// This confirms optimizer sees expanded column list, not SELECT *
 				fprintf(stderr, "[Spike 0.6A] col_test scan - column_ids: [");
 				auto &col_ids = get.GetColumnIds();
 				for (idx_t i = 0; i < col_ids.size(); i++) {
@@ -199,7 +349,7 @@ void RBACOptimizerExtension::WalkPlanWithParent(unique_ptr<LogicalOperator> &op_
 				return;
 			}
 
-			// Part B: Try to filter out 'c_secret' column from col_test_filter
+			// Spike 0.6B: Filter column_ids for col_test_filter
 			if (table_name == "col_test_filter") {
 				FilterColumnIds(get, "c_secret");
 				return;
@@ -207,14 +357,12 @@ void RBACOptimizerExtension::WalkPlanWithParent(unique_ptr<LogicalOperator> &op_
 		}
 	}
 
-	// Recursively process all children
 	for (auto &child : op.children) {
-		WalkPlanWithParent(child);
+		WalkPlanWithParentLegacy(child);
 	}
 }
 
 void RBACOptimizerExtension::InjectHardcodedFilter(unique_ptr<LogicalOperator> &op_ptr, LogicalGet &get) {
-	// Find the "id" column index
 	idx_t id_col_idx = DConstants::INVALID_INDEX;
 	for (idx_t i = 0; i < get.names.size(); i++) {
 		if (get.names[i] == "id") {
@@ -224,55 +372,26 @@ void RBACOptimizerExtension::InjectHardcodedFilter(unique_ptr<LogicalOperator> &
 	}
 
 	if (id_col_idx == DConstants::INVALID_INDEX) {
-		// No "id" column found, skip filter injection
 		return;
 	}
 
-	// Create: id > 0
-	// Left side: column reference to "id"
 	auto col_ref = make_uniq<BoundColumnRefExpression>(
 		LogicalType::INTEGER,
 		ColumnBinding(get.table_index, id_col_idx)
 	);
-
-	// Right side: constant 0
 	auto constant = make_uniq<BoundConstantExpression>(Value::INTEGER(0));
-
-	// Comparison: id > 0
 	auto comparison = make_uniq<BoundComparisonExpression>(
 		ExpressionType::COMPARE_GREATERTHAN,
 		std::move(col_ref),
 		std::move(constant)
 	);
 
-	// Create LogicalFilter with the comparison
 	auto filter = make_uniq<LogicalFilter>(std::move(comparison));
-
-	// Move the LogicalGet to be the child of the filter
 	filter->children.push_back(std::move(op_ptr));
-
-	// Replace the original pointer with the filter
-	op_ptr = std::move(filter);
-}
-
-void RBACOptimizerExtension::InjectParsedFilter(unique_ptr<LogicalOperator> &op_ptr, LogicalGet &get,
-                                                 const string &filter_expr) {
-	// Spike 0.5: Parse and bind the filter expression dynamically
-	auto bound_expr = ParseAndBindExpression(filter_expr, get);
-
-	// Create LogicalFilter with the bound expression
-	auto filter = make_uniq<LogicalFilter>(std::move(bound_expr));
-
-	// Move the LogicalGet to be the child of the filter
-	filter->children.push_back(std::move(op_ptr));
-
-	// Replace the original pointer with the filter
 	op_ptr = std::move(filter);
 }
 
 void RBACOptimizerExtension::FilterColumnIds(LogicalGet &get, const string &forbidden_column) {
-	// Spike 0.6B: Try to remove a column from the scan
-	// Find the column index to remove
 	idx_t forbidden_idx = DConstants::INVALID_INDEX;
 	for (idx_t i = 0; i < get.names.size(); i++) {
 		if (get.names[i] == forbidden_column) {
@@ -282,11 +401,9 @@ void RBACOptimizerExtension::FilterColumnIds(LogicalGet &get, const string &forb
 	}
 
 	if (forbidden_idx == DConstants::INVALID_INDEX) {
-		// Column not in table definition - nothing to filter
 		return;
 	}
 
-	// Get mutable reference to column_ids and filter out the forbidden column
 	auto &col_ids = get.GetMutableColumnIds();
 
 	fprintf(stderr, "[Spike 0.6B] Before filter - column_ids: [");
@@ -296,7 +413,6 @@ void RBACOptimizerExtension::FilterColumnIds(LogicalGet &get, const string &forb
 	}
 	fprintf(stderr, "]\n");
 
-	// Remove the forbidden column from column_ids
 	vector<ColumnIndex> new_col_ids;
 	for (auto &col_id : col_ids) {
 		if (col_id.GetPrimaryIndex() != forbidden_idx) {
@@ -304,7 +420,6 @@ void RBACOptimizerExtension::FilterColumnIds(LogicalGet &get, const string &forb
 		}
 	}
 
-	// Replace column_ids using SetColumnIds
 	get.SetColumnIds(std::move(new_col_ids));
 
 	fprintf(stderr, "[Spike 0.6B] After filter - column_ids: [");
