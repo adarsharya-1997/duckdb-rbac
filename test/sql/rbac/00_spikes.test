@@ -42,3 +42,33 @@ statement error
 SELECT * FROM blocked
 ----
 Access denied to table 'blocked'
+
+# ===== Spike 0.3: Filter injection =====
+
+# Unfiltered table should return all rows (no filter injected)
+statement ok
+CREATE TABLE unfiltered_table (id INT)
+
+statement ok
+INSERT INTO unfiltered_table VALUES (-1), (0), (1), (2)
+
+query I
+SELECT * FROM unfiltered_table ORDER BY id
+----
+-1
+0
+1
+2
+
+statement ok
+CREATE TABLE filtered_table (id INT)
+
+statement ok
+INSERT INTO filtered_table VALUES (-1), (0), (1), (2)
+
+# Query should automatically filter to only id > 0
+query I
+SELECT * FROM filtered_table ORDER BY id
+----
+1
+2
