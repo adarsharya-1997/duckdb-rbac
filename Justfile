@@ -32,31 +32,7 @@ run:
     ./build/debug/duckdb
 
 test-all:
-    ./build/debug/test/unittest "test/*"
-
-# Run tests on debug build
-test:
-    # Phase 1 - Foundation
-    ./build/debug/test/unittest "test/sql/rbac/00*"
-
-    # Phase 2 - DDL Parsing
-    ./build/debug/test/unittest "test/sql/rbac/01*"
-
-    # Phase 3 - Storage & Grants
-    ./build/debug/test/unittest "test/sql/rbac/02*"
-    ./build/debug/test/unittest "test/sql/rbac/03*"
-    ./build/debug/test/unittest "test/sql/rbac/06*"
-
-    # Phase 4 - Enforcement
-    ./build/debug/test/unittest "test/sql/rbac/05*"
-
-    # Phase 5 - Row Policies
-    ./build/debug/test/unittest "test/sql/rbac/04*"
-
-    # Phase 6 - Polish & Edge Cases
-    ./build/debug/test/unittest "test/sql/rbac/07*"
-    ./build/debug/test/unittest "test/sql/rbac/08*"
-    ./build/debug/test/unittest "test/sql/rbac/09*"
+    ./build/debug/test/unittest "test/sql/rbac/*"
 
 # Update submodules to latest
 update:

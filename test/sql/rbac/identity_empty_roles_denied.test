@@ -1,5 +1,5 @@
-# name: test/sql/rbac/26_quoted_policy_identifiers.test
-# description: Quoted identifiers in row policy parsing (current limitation)
+# name: test/sql/rbac/identity_empty_roles_denied.test
+# description: Non-superuser with empty roles is denied access
 # group: [rbac]
 
 require quack
@@ -9,29 +9,27 @@ require quack
 # =============================================================================
 
 statement ok
-CREATE ROLE quote_role;
+CREATE TABLE secret_table (id INTEGER, note VARCHAR);
 
 statement ok
-CREATE TABLE "QuotedTable" ("ColA" INTEGER);
+INSERT INTO secret_table VALUES (1, 'top secret');
+
+# =============================================================================
+# Set identity with no roles and not superuser
+# =============================================================================
 
 statement ok
-INSERT INTO "QuotedTable" VALUES (1);
+SELECT * FROM rbac_set_identity('empty_user', []::VARCHAR[], false);
 
-# =============================================================================
-# Quoted identifiers are not resolved by RBAC parser (current limitation)
-# =============================================================================
-
+# Should be denied without any grants
 statement error
-CREATE ROW POLICY quote_pol ON "QuotedTable" FOR SELECT USING ("ColA" = 1) TO quote_role;
+SELECT COUNT(*) FROM secret_table;
 ----
-does not exist
+lacks SELECT privilege on table
 
 # =============================================================================
 # Cleanup
 # =============================================================================
 
 statement ok
-DROP TABLE "QuotedTable";
-
-statement ok
-DROP ROLE quote_role;
+DROP TABLE secret_table;

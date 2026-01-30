@@ -1,11 +1,11 @@
 # name: test/sql/rbac/04b_row_policies_enforcement.test
-# description: Test row policy enforcement with non-superuser identity
+# description: Test row policy enforcement and no-policy visibility
 # group: [rbac]
 
 require quack
 
 # =============================================================================
-# Setup: Create table and role with row policy
+# Setup: Create tables and role with row policy
 # =============================================================================
 
 statement ok
@@ -17,6 +17,12 @@ CREATE TABLE orders (
 );
 
 statement ok
+CREATE TABLE data_table (
+    id INTEGER,
+    value VARCHAR
+);
+
+statement ok
 INSERT INTO orders VALUES 
     (1, 'Alice', 100.00, 'US'),
     (2, 'Bob', 200.00, 'EU'),
@@ -25,10 +31,19 @@ INSERT INTO orders VALUES
     (5, 'Eve', 250.00, 'APAC');
 
 statement ok
+INSERT INTO data_table VALUES 
+    (1, 'row 1'),
+    (2, 'row 2'),
+    (3, 'row 3');
+
+statement ok
 CREATE ROLE us_sales;
 
 statement ok
 GRANT SELECT ON orders TO us_sales;
+
+statement ok
+GRANT SELECT ON data_table TO us_sales;
 
 # Create row policy: us_sales can only see US region
 statement ok
@@ -82,6 +97,22 @@ SELECT COUNT(*) FROM orders WHERE amount > 100;
 1
 
 # =============================================================================
+# Test: No policy = see all rows (FR-18)
+# =============================================================================
+
+query IT
+SELECT id, value FROM data_table ORDER BY id;
+----
+1	row 1
+2	row 2
+3	row 3
+
+query I
+SELECT COUNT(*) FROM data_table;
+----
+3
+
+# =============================================================================
 # Cleanup
 # =============================================================================
 
@@ -92,7 +123,13 @@ statement ok
 REVOKE SELECT ON orders FROM us_sales;
 
 statement ok
+REVOKE SELECT ON data_table FROM us_sales;
+
+statement ok
 DROP TABLE orders;
+
+statement ok
+DROP TABLE data_table;
 
 statement ok
 DROP ROLE us_sales;

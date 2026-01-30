@@ -144,6 +144,31 @@ orders	analyst
 temp_data	analyst
 
 # =============================================================================
+# Immediate effect of grants (NFR-7)
+# =============================================================================
+
+statement ok
+CREATE ROLE live_role;
+
+statement ok
+SELECT * FROM rbac_set_identity('live_user', ['live_role'], false);
+
+# No grants yet - should fail
+statement error
+SELECT COUNT(*) FROM orders;
+----
+lacks SELECT privilege on table
+
+# Grant should take effect immediately
+statement ok
+GRANT SELECT ON orders TO live_role;
+
+query I
+SELECT COUNT(*) FROM orders;
+----
+3
+
+# =============================================================================
 # Cleanup
 # =============================================================================
 
@@ -152,6 +177,9 @@ REVOKE SELECT ON orders FROM analyst;
 
 statement ok
 REVOKE SELECT ON temp_data FROM analyst;
+
+statement ok
+REVOKE SELECT ON orders FROM live_role;
 
 statement ok
 DROP TABLE orders;
@@ -167,4 +195,7 @@ DROP ROLE analyst;
 
 statement ok
 DROP ROLE viewer;
+
+statement ok
+DROP ROLE live_role;
 

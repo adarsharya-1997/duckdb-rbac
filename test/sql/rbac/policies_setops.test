@@ -58,6 +58,26 @@ SELECT COUNT(*) FROM (
 ----
 1
 
+# UNION (distinct) should see filtered rows only (distinct removes duplicates)
+query I
+SELECT COUNT(*) FROM (
+    SELECT id FROM orders
+    UNION
+    SELECT 3
+);
+----
+2
+
+# EXCEPT should operate on filtered rows only
+query I
+SELECT COUNT(*) FROM (
+    SELECT id FROM orders
+    EXCEPT
+    SELECT * FROM (VALUES (1)) t(id)
+);
+----
+1
+
 # =============================================================================
 # Window functions should operate on filtered rows
 # =============================================================================

@@ -150,11 +150,11 @@ analyst
 # 7.4 Test duckdb_my_roles view (default superuser has no roles)
 # =============================================================================
 
-# Current user's roles (when running as superuser, might be empty or special)
+# Current user's roles (superuser default has no roles)
 query I
-SELECT COUNT(*) >= 0 FROM duckdb_my_roles;
+SELECT COUNT(*) FROM duckdb_my_roles;
 ----
-true
+0
 
 # =============================================================================
 # 7.5 Test rbac_effective_roles() with role inheritance
@@ -188,6 +188,38 @@ query I
 SELECT COUNT(*) FROM duckdb_effective_privileges;
 ----
 0
+
+# =============================================================================
+# 7.7 Non-superuser can read RBAC system tables
+# =============================================================================
+
+statement ok
+SELECT * FROM rbac_set_identity('readonly_user', []::VARCHAR[], false);
+
+query I
+SELECT COUNT(*) FROM duckdb_roles;
+----
+3
+
+query I
+SELECT COUNT(*) FROM duckdb_role_members;
+----
+1
+
+query I
+SELECT COUNT(*) FROM duckdb_table_privileges;
+----
+3
+
+query I
+SELECT COUNT(*) FROM duckdb_column_privileges;
+----
+2
+
+query I
+SELECT COUNT(*) FROM duckdb_row_policies;
+----
+1
 
 # =============================================================================
 # Cleanup

@@ -1,5 +1,5 @@
 # name: test/sql/rbac/07d_complex_row_policies.test
-# description: Test row policies work with complex queries (JOINs, aggregates)
+# description: Test row policies with complex queries and multiple policies
 # group: [rbac]
 
 require quack
@@ -18,6 +18,15 @@ statement ok
 CREATE TABLE customers (id INTEGER, name VARCHAR, region VARCHAR);
 
 statement ok
+CREATE TABLE orders_or (
+    id INTEGER,
+    customer VARCHAR,
+    amount DECIMAL,
+    region VARCHAR,
+    category VARCHAR
+);
+
+statement ok
 INSERT INTO orders VALUES 
     (1, 1, 100.00, 'US'),
     (2, 2, 200.00, 'EU'),
@@ -30,6 +39,14 @@ INSERT INTO customers VALUES
     (2, 'Bob', 'EU'),
     (3, 'Charlie', 'EU');
 
+statement ok
+INSERT INTO orders_or VALUES 
+    (1, 'Alice', 100.00, 'US', 'retail'),
+    (2, 'Bob', 200.00, 'EU', 'wholesale'),
+    (3, 'Charlie', 150.00, 'US', 'wholesale'),
+    (4, 'Diana', 300.00, 'EU', 'retail'),
+    (5, 'Eve', 250.00, 'APAC', 'wholesale');
+
 # Grant access to both tables
 statement ok
 GRANT SELECT ON orders TO regional_user;
@@ -37,12 +54,22 @@ GRANT SELECT ON orders TO regional_user;
 statement ok
 GRANT SELECT ON customers TO regional_user;
 
+statement ok
+GRANT SELECT ON orders_or TO regional_user;
+
 # Create row policy: only see US region data
 statement ok
 CREATE ROW POLICY us_orders ON orders FOR SELECT USING (region = 'US') TO regional_user;
 
 statement ok
 CREATE ROW POLICY us_customers ON customers FOR SELECT USING (region = 'US') TO regional_user;
+
+# Multiple policies OR'd together on orders_or
+statement ok
+CREATE ROW POLICY or_us ON orders_or FOR SELECT USING (region = 'US') TO regional_user;
+
+statement ok
+CREATE ROW POLICY or_retail ON orders_or FOR SELECT USING (category = 'retail') TO regional_user;
 
 # =============================================================================
 # Set identity as non-superuser
@@ -66,6 +93,24 @@ query I
 SELECT COUNT(*) FROM customers;
 ----
 1
+
+# =============================================================================
+# Test: Multiple policies OR'd together (FR-15)
+# =============================================================================
+
+# Should see: US rows (1, 3) OR retail rows (1, 4)
+# Union = rows 1, 3, 4
+query I
+SELECT COUNT(*) FROM orders_or;
+----
+3
+
+query IT
+SELECT id, region FROM orders_or ORDER BY id;
+----
+1	US
+3	US
+4	EU
 
 # =============================================================================
 # Test: Row policies apply in JOINs
@@ -202,16 +247,28 @@ statement ok
 DROP ROW POLICY us_customers ON customers;
 
 statement ok
+DROP ROW POLICY or_us ON orders_or;
+
+statement ok
+DROP ROW POLICY or_retail ON orders_or;
+
+statement ok
 REVOKE SELECT ON orders FROM regional_user;
 
 statement ok
 REVOKE SELECT ON customers FROM regional_user;
 
 statement ok
+REVOKE SELECT ON orders_or FROM regional_user;
+
+statement ok
 DROP TABLE orders;
 
 statement ok
 DROP TABLE customers;
+
+statement ok
+DROP TABLE orders_or;
 
 statement ok
 DROP ROLE regional_user;

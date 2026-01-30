@@ -32,6 +32,15 @@ GRANT SELECT ("ColA") ON "CaseTable" TO ident_role;
 does not exist
 
 # =============================================================================
+# Quoted identifiers in row policies are not resolved (current limitation)
+# =============================================================================
+
+statement error
+CREATE ROW POLICY quote_pol ON "CaseTable" FOR SELECT USING ("ColA" = 1) TO ident_role;
+----
+does not exist
+
+# =============================================================================
 # Cleanup
 # =============================================================================
 
