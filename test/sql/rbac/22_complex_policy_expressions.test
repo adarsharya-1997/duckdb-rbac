@@ -1,0 +1,88 @@
+# name: test/sql/rbac/22_complex_policy_expressions.test
+# description: Row policy expressions with conjunctions and comparisons
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup
+# =============================================================================
+
+statement ok
+CREATE TABLE expr_data (
+    id INTEGER,
+    name VARCHAR,
+    amount INTEGER
+);
+
+statement ok
+INSERT INTO expr_data VALUES
+    (1, 'alice', 50),
+    (2, 'bob', 150),
+    (3, 'alex', 250),
+    (4, 'amy', 175);
+
+statement ok
+CREATE ROLE expr_role;
+
+statement ok
+GRANT SELECT ON expr_data TO expr_role;
+
+statement ok
+CREATE ROW POLICY expr_policy ON expr_data
+    FOR SELECT USING (
+        name = 'alice' OR
+        (name = 'amy' AND amount > 100)
+    )
+    TO expr_role;
+
+# =============================================================================
+# Set identity and verify enforcement
+# =============================================================================
+
+statement ok
+SELECT * FROM rbac_set_identity('expr_user', ['expr_role'], false);
+
+query I
+SELECT COUNT(*) FROM expr_data;
+----
+2
+
+query T
+SELECT name FROM expr_data ORDER BY name;
+----
+alice
+amy
+
+# =============================================================================
+# Negative cases: unsupported operators/functions
+# =============================================================================
+
+statement ok
+CREATE ROW POLICY expr_like ON expr_data
+    FOR SELECT USING (name LIKE 'a%')
+    TO expr_role;
+
+statement error
+SELECT COUNT(*) FROM expr_data;
+----
+Row policy cannot be applied
+
+statement ok
+DROP ROW POLICY expr_like ON expr_data;
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+DROP ROW POLICY expr_policy ON expr_data;
+
+statement ok
+REVOKE SELECT ON expr_data FROM expr_role;
+
+statement ok
+DROP TABLE expr_data;
+
+statement ok
+DROP ROLE expr_role;

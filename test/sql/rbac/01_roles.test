@@ -212,7 +212,7 @@ GRANT SELECT ON orders TO analyst
 ----
 Table privilege granted: SELECT ON orders TO analyst
 
-# Trying to drop analyst should fail (has grants)
+# T-01-07: Trying to drop analyst should fail (has table grants)
 statement error
 DROP ROLE analyst
 ----
@@ -235,6 +235,194 @@ query I
 DROP ROLE analyst
 ----
 Role dropped: analyst
+
+# ===== T-01-08: Cannot drop role with column grants =====
+
+query I
+CREATE ROLE col_role
+----
+Role created: col_role
+
+query I
+GRANT SELECT (id, customer) ON orders TO col_role
+----
+Column privileges granted on orders TO col_role
+
+statement error
+DROP ROLE col_role
+----
+existing grants
+
+query I
+REVOKE SELECT (id, customer) ON orders FROM col_role
+----
+Column privileges revoked on orders FROM col_role
+
+query I
+DROP ROLE col_role
+----
+Role dropped: col_role
+
+# ===== T-01-09: Cannot drop role with row policies =====
+
+query I
+CREATE ROLE policy_role
+----
+Role created: policy_role
+
+query I
+CREATE ROW POLICY test_policy ON orders FOR SELECT USING (amount > 0) TO policy_role
+----
+Row policy created: test_policy ON orders
+
+statement error
+DROP ROLE policy_role
+----
+existing grants
+
+query I
+DROP ROW POLICY test_policy ON orders
+----
+Row policy dropped: test_policy ON orders
+
+query I
+DROP ROLE policy_role
+----
+Role dropped: policy_role
+
+# ===== T-01-10: Cannot drop role that is member of another =====
+
+query I
+CREATE ROLE parent_role
+----
+Role created: parent_role
+
+query I
+CREATE ROLE member_role
+----
+Role created: member_role
+
+query I
+GRANT parent_role TO member_role
+----
+Role granted: parent_role TO member_role
+
+# Cannot drop member_role (it has membership as member)
+statement error
+DROP ROLE member_role
+----
+existing grants
+
+# Cannot drop parent_role (it has membership as the role being granted)
+statement error
+DROP ROLE parent_role
+----
+existing grants
+
+query I
+REVOKE parent_role FROM member_role
+----
+Role revoked: parent_role FROM member_role
+
+query I
+DROP ROLE member_role
+----
+Role dropped: member_role
+
+query I
+DROP ROLE parent_role
+----
+Role dropped: parent_role
+
+# ===== T-01-13: Grant non-existent role to member =====
+
+query I
+CREATE ROLE existing_member
+----
+Role created: existing_member
+
+statement error
+GRANT nonexistent_role TO existing_member
+----
+does not exist
+
+query I
+DROP ROLE existing_member
+----
+Role dropped: existing_member
+
+# ===== T-01-14: Grant same membership twice (idempotent) =====
+
+query I
+CREATE ROLE role_a
+----
+Role created: role_a
+
+query I
+CREATE ROLE role_b
+----
+Role created: role_b
+
+query I
+GRANT role_a TO role_b
+----
+Role granted: role_a TO role_b
+
+# Grant same membership again - should be idempotent (succeed without error)
+query I
+GRANT role_a TO role_b
+----
+Role granted: role_a TO role_b
+
+# Verify only one membership entry exists
+query I
+SELECT COUNT(*) FROM duckdb_role_members WHERE role_name = 'role_a' AND member = 'role_b'
+----
+1
+
+query I
+REVOKE role_a FROM role_b
+----
+Role revoked: role_a FROM role_b
+
+query I
+DROP ROLE role_b
+----
+Role dropped: role_b
+
+query I
+DROP ROLE role_a
+----
+Role dropped: role_a
+
+# ===== T-01-16: Revoke membership that doesn't exist (idempotent) =====
+
+query I
+CREATE ROLE role_x
+----
+Role created: role_x
+
+query I
+CREATE ROLE role_y
+----
+Role created: role_y
+
+# No membership exists between role_x and role_y
+# Revoke should succeed (idempotent - no error even if nothing to revoke)
+query I
+REVOKE role_x FROM role_y
+----
+Role revoked: role_x FROM role_y
+
+query I
+DROP ROLE role_y
+----
+Role dropped: role_y
+
+query I
+DROP ROLE role_x
+----
+Role dropped: role_x
 
 # Clean up
 query I

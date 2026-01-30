@@ -1,0 +1,71 @@
+# name: test/sql/rbac/17_policy_column_injection.test
+# description: Row policy adds non-projected columns to scan
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup
+# =============================================================================
+
+statement ok
+CREATE TABLE owner_data (
+    id INTEGER,
+    owner VARCHAR,
+    secret VARCHAR
+);
+
+statement ok
+INSERT INTO owner_data VALUES
+    (1, 'alice', 'a1'),
+    (2, 'bob', 'b1'),
+    (3, 'alice', 'a2');
+
+statement ok
+CREATE ROLE owner_role;
+
+statement ok
+GRANT SELECT (id) ON owner_data TO owner_role;
+
+statement ok
+CREATE ROW POLICY owner_only ON owner_data
+    FOR SELECT USING (owner = 'alice')
+    TO owner_role;
+
+# =============================================================================
+# Set identity and verify filtering on non-projected column
+# =============================================================================
+
+statement ok
+SELECT * FROM rbac_set_identity('owner_user', ['owner_role'], false);
+
+query I
+SELECT COUNT(*) FROM owner_data;
+----
+2
+
+query I
+SELECT COUNT(*) FROM owner_data WHERE id > 0;
+----
+2
+
+query I
+SELECT COUNT(*) FROM (SELECT id FROM owner_data);
+----
+2
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+DROP ROW POLICY owner_only ON owner_data;
+
+statement ok
+REVOKE SELECT (id) ON owner_data FROM owner_role;
+
+statement ok
+DROP TABLE owner_data;
+
+statement ok
+DROP ROLE owner_role;

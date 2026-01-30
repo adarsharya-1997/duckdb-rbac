@@ -88,6 +88,30 @@ SELECT id, name, ssn FROM employees;
 ----
 lacks SELECT privilege on column 'ssn'
 
+# T-03-12b: Forbidden column in GROUP BY - should fail
+statement error
+SELECT COUNT(*) FROM employees GROUP BY salary;
+----
+lacks SELECT privilege on column 'salary'
+
+# T-03-13: Forbidden column in HAVING - should fail
+statement error
+SELECT id FROM employees GROUP BY id HAVING MAX(salary) > 50000;
+----
+lacks SELECT privilege on column 'salary'
+
+# T-03-15: Forbidden column in expression (salary * 2) - should fail
+statement error
+SELECT id, salary * 2 AS double_salary FROM employees;
+----
+lacks SELECT privilege on column 'salary'
+
+# T-03-16: Forbidden column in CASE expression - should fail
+statement error
+SELECT id, CASE WHEN salary > 50000 THEN 'high' ELSE 'low' END FROM employees;
+----
+lacks SELECT privilege on column 'salary'
+
 # =============================================================================
 # Test: Allowed queries with column subset
 # =============================================================================
@@ -112,8 +136,60 @@ SELECT id, name FROM employees ORDER BY name;
 2	Bob
 
 # =============================================================================
+# Test: JOIN and Subquery with forbidden columns (T-03-14, T-03-17)
+# Need a second table for these tests
+# =============================================================================
+
+# Create second table (as superuser implicitly - these are DDL operations)
+statement ok
+CREATE TABLE departments (
+    dept_id INTEGER,
+    emp_id INTEGER,
+    dept_name VARCHAR
+);
+
+statement ok
+INSERT INTO departments VALUES (1, 1, 'Engineering'), (2, 2, 'Sales');
+
+# Grant SELECT on departments to our role
+statement ok
+GRANT SELECT ON departments TO limited_access;
+
+# T-03-14: Forbidden column in JOIN condition - should fail
+# We have access to departments.emp_id but not employees.salary
+statement error
+SELECT e.id, d.dept_name FROM employees e JOIN departments d ON e.salary = d.dept_id;
+----
+lacks SELECT privilege on column 'salary'
+
+# T-03-17: Forbidden column in subquery - should fail
+statement error
+SELECT id FROM employees WHERE id IN (SELECT emp_id FROM departments WHERE dept_id = (SELECT MAX(salary) FROM employees));
+----
+lacks SELECT privilege on column 'salary'
+
+# T-03-17b: Forbidden column in correlated subquery
+statement error
+SELECT id FROM employees e WHERE EXISTS (SELECT 1 FROM departments d WHERE d.emp_id = e.id AND e.salary > 50000);
+----
+lacks SELECT privilege on column 'salary'
+
+# Allowed JOIN using permitted columns should succeed
+query IT
+SELECT e.id, d.dept_name FROM employees e JOIN departments d ON e.id = d.emp_id ORDER BY e.id;
+----
+1	Engineering
+2	Sales
+
+# =============================================================================
 # Cleanup
 # =============================================================================
+
+statement ok
+REVOKE SELECT ON departments FROM limited_access;
+
+statement ok
+DROP TABLE departments;
 
 statement ok
 REVOKE SELECT (id, name, email) ON employees FROM limited_access;

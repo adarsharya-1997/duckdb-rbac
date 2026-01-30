@@ -119,8 +119,58 @@ DROP ROLE analyst;
 Cannot drop role 'analyst': role has existing grants
 
 # =============================================================================
+# T-06-06, T-06-07, T-06-08: Permission denied errors include context
+# =============================================================================
+
+# Setup for permission denial tests
+statement ok
+CREATE TABLE secret_data (id INTEGER, value VARCHAR, classified VARCHAR);
+
+statement ok
+CREATE ROLE test_user_role;
+
+# Grant limited access
+statement ok
+GRANT SELECT (id, value) ON secret_data TO test_user_role;
+
+# Set identity as non-superuser
+statement ok
+SELECT * FROM rbac_set_identity('alice_test', ['test_user_role'], false);
+
+# T-06-06: Permission denied error includes table name
+statement error
+SELECT * FROM orders;
+----
+lacks SELECT privilege on table 'main.orders'
+
+# T-06-07: Permission denied error includes column name
+statement error
+SELECT classified FROM secret_data;
+----
+lacks SELECT privilege on column 'classified'
+
+# T-06-08: Permission denied error includes user name
+# The error message should reference the user
+statement error
+SELECT * FROM orders;
+----
+User 'alice_test'
+
+# Column error should also include user name
+statement error
+SELECT classified FROM secret_data;
+----
+User 'alice_test'
+
+# =============================================================================
 # Cleanup
 # =============================================================================
+
+statement ok
+REVOKE SELECT (id, value) ON secret_data FROM test_user_role;
+
+statement ok
+DROP TABLE secret_data;
 
 statement ok
 DROP ROW POLICY test_policy ON orders;
@@ -133,4 +183,7 @@ DROP TABLE orders;
 
 statement ok
 DROP ROLE analyst;
+
+statement ok
+DROP ROLE test_user_role;
 

@@ -1,0 +1,66 @@
+# name: test/sql/rbac/16_policy_expression_casts.test
+# description: Row policy expressions with CAST and conjunctions
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup
+# =============================================================================
+
+statement ok
+CREATE TABLE cast_data (
+    id INTEGER,
+    region VARCHAR
+);
+
+statement ok
+INSERT INTO cast_data VALUES
+    (1, 'US'),
+    (2, 'EU'),
+    (3, 'US');
+
+statement ok
+CREATE ROLE cast_role;
+
+statement ok
+GRANT SELECT ON cast_data TO cast_role;
+
+# CAST on columns is treated as a no-op by the simple binder
+statement ok
+CREATE ROW POLICY cast_policy ON cast_data
+    FOR SELECT USING (CAST(region AS VARCHAR) = 'US')
+    TO cast_role;
+
+# =============================================================================
+# Set identity and verify enforcement
+# =============================================================================
+
+statement ok
+SELECT * FROM rbac_set_identity('cast_user', ['cast_role'], false);
+
+query I
+SELECT COUNT(*) FROM cast_data;
+----
+2
+
+query I
+SELECT COUNT(*) FROM cast_data WHERE region = 'US';
+----
+2
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+DROP ROW POLICY cast_policy ON cast_data;
+
+statement ok
+REVOKE SELECT ON cast_data FROM cast_role;
+
+statement ok
+DROP TABLE cast_data;
+
+statement ok
+DROP ROLE cast_role;

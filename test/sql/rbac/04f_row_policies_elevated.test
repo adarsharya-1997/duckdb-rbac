@@ -1,0 +1,134 @@
+# name: test/sql/rbac/04f_row_policies_elevated.test
+# description: Test that row policy expressions run with elevated privileges (FR-16)
+# group: [rbac]
+# requirements: FR-16 - Policy expressions can reference any column of the table
+
+require quack
+
+# =============================================================================
+# Setup: Create table with sensitive columns
+# =============================================================================
+
+statement ok
+CREATE TABLE documents (
+    id INTEGER,
+    title VARCHAR,
+    content VARCHAR,
+    classification_level INTEGER,
+    owner VARCHAR
+);
+
+statement ok
+INSERT INTO documents VALUES 
+    (1, 'Public Report', 'Public content', 1, 'alice'),
+    (2, 'Internal Memo', 'Internal content', 2, 'bob'),
+    (3, 'Confidential Doc', 'Secret content', 3, 'alice'),
+    (4, 'Top Secret', 'Classified content', 4, 'charlie'),
+    (5, 'Open Doc', 'Open content', 1, 'bob');
+
+statement ok
+CREATE ROLE reader;
+
+# Grant SELECT on ONLY some columns - NOT classification_level or content
+statement ok
+GRANT SELECT (id, title, owner) ON documents TO reader;
+
+# =============================================================================
+# T-04-13: Policy expression references column user can't SELECT
+# The policy filters on classification_level, which the user can't see
+# But the policy should still work (elevated privileges)
+# =============================================================================
+
+# Create policy that filters on a column the user can't SELECT
+statement ok
+CREATE ROW POLICY clearance_policy ON documents FOR SELECT 
+    USING (classification_level <= 2) 
+    TO reader;
+
+# Set identity as non-superuser with reader role
+statement ok
+SELECT * FROM rbac_set_identity('low_clearance_user', ['reader'], false);
+
+# Verify user cannot SELECT the classification_level column
+statement error
+SELECT classification_level FROM documents;
+----
+lacks SELECT privilege on column 'classification_level'
+
+# Verify user cannot SELECT content column
+statement error
+SELECT content FROM documents;
+----
+lacks SELECT privilege on column 'content'
+
+# But user CAN query allowed columns, and policy filters correctly
+# Should only see rows where classification_level <= 2 (ids 1, 2, 5)
+query I
+SELECT COUNT(*) FROM documents;
+----
+3
+
+# Verify the correct documents are visible (level 1 and 2 only)
+query IT
+SELECT id, title FROM documents ORDER BY id;
+----
+1	Public Report
+2	Internal Memo
+5	Open Doc
+
+# User can filter on allowed columns
+query IT
+SELECT id, title FROM documents WHERE owner = 'alice' ORDER BY id;
+----
+1	Public Report
+
+# Verify high-classification documents are NOT visible
+# (id=3 has level=3, id=4 has level=4 - both filtered out by policy)
+query I
+SELECT COUNT(*) FROM documents WHERE id IN (3, 4);
+----
+0
+
+# =============================================================================
+# Test: Policy with current_user() on column user CAN see
+# =============================================================================
+
+# Drop existing policy
+statement ok
+DROP ROW POLICY clearance_policy ON documents;
+
+# Create policy combining: user can see their own docs OR low classification
+statement ok
+CREATE ROW POLICY combo_policy ON documents FOR SELECT 
+    USING (owner = current_user() OR classification_level <= 1) 
+    TO reader;
+
+# Now user 'low_clearance_user' should see:
+# - Their own docs (none - owner would need to match 'low_clearance_user')
+# - Level 1 docs (ids 1, 5)
+query I
+SELECT COUNT(*) FROM documents;
+----
+2
+
+query IT
+SELECT id, title FROM documents ORDER BY id;
+----
+1	Public Report
+5	Open Doc
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+DROP ROW POLICY combo_policy ON documents;
+
+statement ok
+REVOKE SELECT (id, title, owner) ON documents FROM reader;
+
+statement ok
+DROP TABLE documents;
+
+statement ok
+DROP ROLE reader;

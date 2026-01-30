@@ -1,0 +1,91 @@
+# name: test/sql/rbac/21_multitable_policy_binding.test
+# description: Row policy binding across joins and aliases
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup
+# =============================================================================
+
+statement ok
+CREATE TABLE customers (
+    id INTEGER,
+    region VARCHAR
+);
+
+statement ok
+CREATE TABLE orders (
+    id INTEGER,
+    customer_id INTEGER,
+    amount INTEGER
+);
+
+statement ok
+INSERT INTO customers VALUES
+    (1, 'US'),
+    (2, 'EU');
+
+statement ok
+INSERT INTO orders VALUES
+    (10, 1, 100),
+    (11, 2, 200),
+    (12, 1, 300);
+
+statement ok
+CREATE ROLE order_role;
+
+statement ok
+GRANT SELECT ON customers TO order_role;
+
+statement ok
+GRANT SELECT ON orders TO order_role;
+
+statement ok
+CREATE ROW POLICY customer_us ON customers FOR SELECT USING (region = 'US') TO order_role;
+
+statement ok
+SELECT * FROM rbac_set_identity('join_user', ['order_role'], false);
+
+# =============================================================================
+# Join should still respect customer policy
+# =============================================================================
+
+query II
+SELECT o.id, c.region
+FROM orders o
+JOIN customers c ON o.customer_id = c.id
+ORDER BY o.id;
+----
+10	US
+12	US
+
+# Explicit projection without region should still filter
+query I
+SELECT COUNT(*)
+FROM orders o
+JOIN customers c ON o.customer_id = c.id;
+----
+2
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+DROP ROW POLICY customer_us ON customers;
+
+statement ok
+REVOKE SELECT ON orders FROM order_role;
+
+statement ok
+REVOKE SELECT ON customers FROM order_role;
+
+statement ok
+DROP TABLE orders;
+
+statement ok
+DROP TABLE customers;
+
+statement ok
+DROP ROLE order_role;

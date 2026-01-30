@@ -1,0 +1,89 @@
+# name: test/sql/rbac/12_role_inheritance_cycles.test
+# description: Effective roles with cyclic role membership
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup: Create cyclic role graph
+# =============================================================================
+
+statement ok
+CREATE ROLE role_a;
+
+statement ok
+CREATE ROLE role_b;
+
+statement ok
+CREATE ROLE role_c;
+
+statement ok
+GRANT role_a TO role_b;
+
+statement ok
+GRANT role_b TO role_c;
+
+statement ok
+GRANT role_c TO role_a;
+
+statement ok
+CREATE TABLE cycle_data (id INTEGER, value VARCHAR);
+
+statement ok
+INSERT INTO cycle_data VALUES (1, 'ok');
+
+statement ok
+GRANT SELECT ON cycle_data TO role_b;
+
+# =============================================================================
+# Set identity with role_a and validate effective roles
+# =============================================================================
+
+statement ok
+SELECT * FROM rbac_set_identity('cycle_user', ['role_a'], false);
+
+query I
+SELECT len(rbac_effective_roles());
+----
+3
+
+query T
+SELECT UNNEST(rbac_effective_roles()) AS role ORDER BY role;
+----
+role_a
+role_b
+role_c
+
+# Permission should be inherited via the cycle
+query I
+SELECT COUNT(*) FROM cycle_data;
+----
+1
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+REVOKE SELECT ON cycle_data FROM role_b;
+
+statement ok
+DROP TABLE cycle_data;
+
+statement ok
+REVOKE role_c FROM role_a;
+
+statement ok
+REVOKE role_b FROM role_c;
+
+statement ok
+REVOKE role_a FROM role_b;
+
+statement ok
+DROP ROLE role_c;
+
+statement ok
+DROP ROLE role_b;
+
+statement ok
+DROP ROLE role_a;

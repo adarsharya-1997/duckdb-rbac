@@ -1,0 +1,37 @@
+# name: test/sql/rbac/26_quoted_policy_identifiers.test
+# description: Quoted identifiers in row policy parsing (current limitation)
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup
+# =============================================================================
+
+statement ok
+CREATE ROLE quote_role;
+
+statement ok
+CREATE TABLE "QuotedTable" ("ColA" INTEGER);
+
+statement ok
+INSERT INTO "QuotedTable" VALUES (1);
+
+# =============================================================================
+# Quoted identifiers are not resolved by RBAC parser (current limitation)
+# =============================================================================
+
+statement error
+CREATE ROW POLICY quote_pol ON "QuotedTable" FOR SELECT USING ("ColA" = 1) TO quote_role;
+----
+does not exist
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+DROP TABLE "QuotedTable";
+
+statement ok
+DROP ROLE quote_role;

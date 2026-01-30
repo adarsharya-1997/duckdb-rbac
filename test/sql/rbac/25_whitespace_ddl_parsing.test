@@ -1,0 +1,92 @@
+# name: test/sql/rbac/25_whitespace_ddl_parsing.test
+# description: DDL parsing with whitespace/newlines
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup
+# =============================================================================
+
+statement ok
+CREATE TABLE ws_table (id INTEGER, name VARCHAR);
+
+statement ok
+CREATE ROLE ws_role;
+
+# =============================================================================
+# Whitespace-heavy parsing (note: parser does not accept newlines in keywords)
+# =============================================================================
+
+statement error
+CREATE ROLE
+    ws_role_2
+;
+----
+syntax error
+
+statement error
+GRANT
+    SELECT
+ON
+    ws_table
+TO
+    ws_role
+;
+----
+syntax error
+
+statement error
+GRANT SELECT
+(
+    id,
+    name
+)
+ON ws_table TO ws_role_2
+;
+----
+syntax error
+
+statement error
+CREATE ROW POLICY
+    ws_policy
+ON
+    ws_table
+FOR SELECT
+USING
+(
+    id > 0
+)
+TO
+    ws_role
+;
+----
+syntax error
+
+statement error
+DROP ROW POLICY
+    ws_policy
+ON
+    ws_table
+;
+----
+syntax error
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+REVOKE SELECT ON ws_table FROM ws_role;
+
+statement ok
+DROP TABLE ws_table;
+
+statement ok
+DROP ROLE ws_role;
+
+statement ok
+CREATE ROLE ws_role_2;
+
+statement ok
+DROP ROLE ws_role_2;

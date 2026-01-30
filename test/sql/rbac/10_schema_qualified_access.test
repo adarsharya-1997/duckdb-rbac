@@ -1,0 +1,96 @@
+# name: test/sql/rbac/10_schema_qualified_access.test
+# description: Test schema-qualified grants and row policies
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup: Create schemas, tables, and role
+# =============================================================================
+
+statement ok
+CREATE SCHEMA secure;
+
+statement ok
+CREATE TABLE secure.payroll (
+    id INTEGER,
+    name VARCHAR,
+    dept VARCHAR,
+    salary INTEGER
+);
+
+statement ok
+INSERT INTO secure.payroll VALUES
+    (1, 'Alice', 'ENG', 90000),
+    (2, 'Bob', 'HR', 80000);
+
+statement ok
+CREATE TABLE payroll (
+    id INTEGER,
+    name VARCHAR,
+    dept VARCHAR
+);
+
+statement ok
+INSERT INTO payroll VALUES
+    (1, 'Mallory', 'ENG');
+
+statement ok
+CREATE ROLE payroll_reader;
+
+statement ok
+GRANT SELECT ON secure.payroll TO payroll_reader;
+
+statement ok
+CREATE ROW POLICY dept_eng ON secure.payroll
+    FOR SELECT USING (dept = 'ENG')
+    TO payroll_reader;
+
+# =============================================================================
+# Set non-superuser identity with payroll_reader role
+# =============================================================================
+
+statement ok
+SELECT * FROM rbac_set_identity('pay_user', ['payroll_reader'], false);
+
+# =============================================================================
+# Test: Schema-qualified access and policy enforcement
+# =============================================================================
+
+query I
+SELECT COUNT(*) FROM secure.payroll;
+----
+1
+
+query T
+SELECT name FROM secure.payroll ORDER BY id;
+----
+Alice
+
+# Unqualified table name resolves to main.payroll and should be denied
+statement error
+SELECT * FROM payroll;
+----
+lacks SELECT privilege on table
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+DROP ROW POLICY dept_eng ON secure.payroll;
+
+statement ok
+REVOKE SELECT ON secure.payroll FROM payroll_reader;
+
+statement ok
+DROP TABLE secure.payroll;
+
+statement ok
+DROP TABLE payroll;
+
+statement ok
+DROP SCHEMA secure;
+
+statement ok
+DROP ROLE payroll_reader;

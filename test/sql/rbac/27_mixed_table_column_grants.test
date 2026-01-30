@@ -1,0 +1,59 @@
+# name: test/sql/rbac/27_mixed_table_column_grants.test
+# description: Table grant overrides column restrictions
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup
+# =============================================================================
+
+statement ok
+CREATE TABLE mixed_data (
+    id INTEGER,
+    secret VARCHAR
+);
+
+statement ok
+INSERT INTO mixed_data VALUES (1, 's1');
+
+statement ok
+CREATE ROLE mixed_role;
+
+# Start with column-only grant
+statement ok
+GRANT SELECT (id) ON mixed_data TO mixed_role;
+
+statement ok
+SELECT * FROM rbac_set_identity('mixed_user', ['mixed_role'], false);
+
+# Column restriction should apply
+statement error
+SELECT secret FROM mixed_data;
+----
+lacks SELECT privilege on column
+
+# Add table-level grant, should allow all columns
+statement ok
+GRANT SELECT ON mixed_data TO mixed_role;
+
+query TT
+SELECT id, secret FROM mixed_data;
+----
+1	s1
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+REVOKE SELECT ON mixed_data FROM mixed_role;
+
+statement ok
+REVOKE SELECT (id) ON mixed_data FROM mixed_role;
+
+statement ok
+DROP TABLE mixed_data;
+
+statement ok
+DROP ROLE mixed_role;

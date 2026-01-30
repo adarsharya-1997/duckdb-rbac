@@ -1,0 +1,59 @@
+# name: test/sql/rbac/15_schema_introspection.test
+# description: Effective privileges and roles with schema-qualified objects
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup: schema-qualified table and role
+# =============================================================================
+
+statement ok
+CREATE SCHEMA analytics;
+
+statement ok
+CREATE TABLE analytics.metrics (id INTEGER, name VARCHAR);
+
+statement ok
+INSERT INTO analytics.metrics VALUES (1, 'm1');
+
+statement ok
+CREATE ROLE analyst_role;
+
+statement ok
+GRANT SELECT ON analytics.metrics TO analyst_role;
+
+# =============================================================================
+# Set identity and verify introspection views
+# =============================================================================
+
+statement ok
+SELECT * FROM rbac_set_identity('analyst_user', ['analyst_role'], false);
+
+query T
+SELECT role_name FROM duckdb_my_roles ORDER BY role_name;
+----
+analyst_role
+
+query TTTT
+SELECT table_schema, table_name, grantee, grant_level
+FROM duckdb_effective_privileges
+WHERE table_name = 'metrics';
+----
+analytics	metrics	analyst_role	TABLE
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+REVOKE SELECT ON analytics.metrics FROM analyst_role;
+
+statement ok
+DROP TABLE analytics.metrics;
+
+statement ok
+DROP SCHEMA analytics;
+
+statement ok
+DROP ROLE analyst_role;

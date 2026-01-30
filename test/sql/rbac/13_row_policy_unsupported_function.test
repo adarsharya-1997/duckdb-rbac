@@ -1,0 +1,54 @@
+# name: test/sql/rbac/13_row_policy_unsupported_function.test
+# description: Unsupported function in row policy fails at enforcement
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup: Table, role, and policy with unsupported function
+# =============================================================================
+
+statement ok
+CREATE TABLE policy_data (id INTEGER, region VARCHAR);
+
+statement ok
+INSERT INTO policy_data VALUES (1, 'US'), (2, 'EU');
+
+statement ok
+CREATE ROLE policy_user;
+
+statement ok
+GRANT SELECT ON policy_data TO policy_user;
+
+statement ok
+CREATE ROW POLICY bad_func ON policy_data
+    FOR SELECT USING (lower(region) = 'us')
+    TO policy_user;
+
+# =============================================================================
+# Set identity and verify query fails at enforcement
+# =============================================================================
+
+statement ok
+SELECT * FROM rbac_set_identity('policy_user_1', ['policy_user'], false);
+
+statement error
+SELECT * FROM policy_data;
+----
+Row policy cannot be applied
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+DROP ROW POLICY bad_func ON policy_data;
+
+statement ok
+REVOKE SELECT ON policy_data FROM policy_user;
+
+statement ok
+DROP TABLE policy_data;
+
+statement ok
+DROP ROLE policy_user;

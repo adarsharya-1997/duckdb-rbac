@@ -31,6 +31,9 @@ build:
 run:
     ./build/debug/duckdb
 
+test-all:
+    ./build/debug/test/unittest "test/*"
+
 # Run tests on debug build
 test:
     # Phase 1 - Foundation
@@ -50,13 +53,10 @@ test:
     # Phase 5 - Row Policies
     ./build/debug/test/unittest "test/sql/rbac/04*"
 
-    # Test Phase 6 files
+    # Phase 6 - Polish & Edge Cases
     ./build/debug/test/unittest "test/sql/rbac/07*"
     ./build/debug/test/unittest "test/sql/rbac/08*"
     ./build/debug/test/unittest "test/sql/rbac/09*"
-
-spike:
-    ./build/debug/test/unittest "test/sql/rbac/00_spikes.test"
 
 # Update submodules to latest
 update:

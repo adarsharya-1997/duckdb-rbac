@@ -1,0 +1,42 @@
+# name: test/sql/rbac/19_identifier_quirks.test
+# description: Identifier quoting and mixed-case limitations
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup
+# =============================================================================
+
+statement ok
+CREATE ROLE ident_role;
+
+statement ok
+CREATE TABLE "CaseTable" ("ColA" INTEGER);
+
+statement ok
+INSERT INTO "CaseTable" VALUES (1);
+
+# =============================================================================
+# Quoted identifiers in GRANT are not resolved by RBAC parser (current limitation)
+# =============================================================================
+
+statement error
+GRANT SELECT ON "CaseTable" TO ident_role;
+----
+does not exist
+
+statement error
+GRANT SELECT ("ColA") ON "CaseTable" TO ident_role;
+----
+does not exist
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+DROP TABLE "CaseTable";
+
+statement ok
+DROP ROLE ident_role;

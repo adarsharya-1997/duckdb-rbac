@@ -133,8 +133,67 @@ SELECT region, SUM(amount) FROM orders GROUP BY region ORDER BY region;
 US	250.00
 
 # =============================================================================
+# Test: T-08-04 Self-join - same policy applies to both aliases
+# =============================================================================
+
+# Create employees table for self-join test
+statement ok
+CREATE TABLE employees (id INTEGER, name VARCHAR, manager_id INTEGER, region VARCHAR);
+
+statement ok
+INSERT INTO employees VALUES 
+    (1, 'Alice', NULL, 'US'),
+    (2, 'Bob', 1, 'US'),
+    (3, 'Charlie', 1, 'EU'),
+    (4, 'Diana', 2, 'US'),
+    (5, 'Eve', 3, 'EU');
+
+statement ok
+GRANT SELECT ON employees TO regional_user;
+
+statement ok
+CREATE ROW POLICY us_employees ON employees FOR SELECT USING (region = 'US') TO regional_user;
+
+# Self-join: both e1 and e2 should be filtered by the same policy
+# Only US employees: Alice (1), Bob (2), Diana (4)
+# Bob's manager is Alice (both US) - should work
+# Diana's manager is Bob (both US) - should work
+query ITT
+SELECT e1.id, e1.name, e2.name AS manager 
+FROM employees e1 
+JOIN employees e2 ON e1.manager_id = e2.id 
+ORDER BY e1.id;
+----
+2	Bob	Alice
+4	Diana	Bob
+
+# Verify count - only 2 rows match (Bob->Alice, Diana->Bob)
+# Charlie and Eve are filtered out (EU region)
+query I
+SELECT COUNT(*) FROM employees e1 JOIN employees e2 ON e1.manager_id = e2.id;
+----
+2
+
+# Self-join with same alias checking hierarchy depth
+query I
+SELECT COUNT(*) FROM employees e1 
+LEFT JOIN employees e2 ON e1.manager_id = e2.id
+LEFT JOIN employees e3 ON e2.manager_id = e3.id;
+----
+3
+
+# =============================================================================
 # Cleanup
 # =============================================================================
+
+statement ok
+DROP ROW POLICY us_employees ON employees;
+
+statement ok
+REVOKE SELECT ON employees FROM regional_user;
+
+statement ok
+DROP TABLE employees;
 
 statement ok
 DROP ROW POLICY us_orders ON orders;

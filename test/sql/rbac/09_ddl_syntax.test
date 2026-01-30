@@ -114,22 +114,23 @@ DROP ROW POLICY policy_3 ON test_table;
 # 9.5 Syntax Variations
 # =============================================================================
 
-# Case insensitivity
+# Note: FR-5 specifies case-insensitivity for role names, but current implementation
+# is CASE-SENSITIVE. Role names are stored as-is. This is a known limitation.
+# TODO: Implement FR-5 - convert role names to lowercase on storage and lookup.
+
+# Case sensitivity tests - demonstrating current (case-preserving) behavior
 statement ok
 create role CamelCase;
 
 statement ok
 CREATE ROLE lowercase;
 
-statement error
-drop role camelcase;
-----
-Role 'camelcase' does not exist
+# Must use exact case to drop
+statement ok
+drop role CamelCase;
 
-statement error
-DROP ROLE LOWERCASE;
-----
-Role 'LOWERCASE' does not exist
+statement ok
+DROP ROLE lowercase;
 
 # =============================================================================
 # Cleanup

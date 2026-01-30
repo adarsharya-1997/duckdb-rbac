@@ -1,0 +1,55 @@
+# name: test/sql/rbac/24_schema_orphaned_grants.test
+# description: Orphaned schema-qualified grants filtered from effective privileges
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup
+# =============================================================================
+
+statement ok
+CREATE SCHEMA s1;
+
+statement ok
+CREATE TABLE s1.orphan_table (id INTEGER);
+
+statement ok
+CREATE ROLE orphan_role;
+
+statement ok
+GRANT SELECT ON s1.orphan_table TO orphan_role;
+
+statement ok
+SELECT * FROM rbac_set_identity('orphan_user', ['orphan_role'], false);
+
+# Orphan should exist in base table
+query I
+SELECT COUNT(*) FROM duckdb_table_privileges
+WHERE table_schema = 's1' AND table_name = 'orphan_table';
+----
+1
+
+# Drop table to create orphan
+statement ok
+DROP TABLE s1.orphan_table;
+
+# Orphan should be filtered from effective privileges view
+query I
+SELECT COUNT(*) FROM duckdb_effective_privileges
+WHERE table_schema = 's1' AND table_name = 'orphan_table';
+----
+0
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+REVOKE SELECT ON s1.orphan_table FROM orphan_role;
+
+statement ok
+DROP SCHEMA s1;
+
+statement ok
+DROP ROLE orphan_role;

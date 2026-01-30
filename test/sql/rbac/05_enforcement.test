@@ -1,12 +1,17 @@
 # name: test/sql/rbac/05_enforcement.test
-# description: Test permission enforcement - table, column, and row access
+# description: Test superuser bypass and setup verification for RBAC enforcement
 # group: [rbac]
-# requirements: US-1, US-2, US-3, US-4, FR-12, FR-13, FR-21
+# requirements: FR-21 (Superuser Bypass)
+#
+# NOTE: Non-superuser enforcement tests are in:
+#   - 05b_enforcement_table.test (table-level access)
+#   - 05c_enforcement_column.test (column-level access)
+#   - 05d_enforcement_inherited.test (inherited role permissions)
 
 require quack
 
 # =============================================================================
-# Setup - Create test data
+# Setup - Create test data (runs as superuser by default)
 # =============================================================================
 
 statement ok
@@ -33,31 +38,77 @@ CREATE TABLE secret_table (
 statement ok
 INSERT INTO secret_table VALUES (1, 'Top Secret');
 
+# Create roles and grants for verification
 statement ok
 CREATE ROLE analyst;
 
 statement ok
-CREATE ROLE viewer;
+CREATE ROLE us_analyst;
 
-# Grant analyst access to orders (but not secret_table)
 statement ok
 GRANT SELECT ON orders TO analyst;
 
-# Grant viewer access to limited columns only
 statement ok
-GRANT SELECT (id, customer, region) ON orders TO viewer;
+GRANT SELECT ON orders TO us_analyst;
+
+statement ok
+CREATE ROW POLICY us_only ON orders FOR SELECT USING (region = 'US') TO us_analyst;
 
 # =============================================================================
-# Note: The tests below assume identity switching capability
-# When identity is implemented, uncomment the actual enforcement tests
-# For now, we verify the grants/policies are correctly set up
+# 6.4 Superuser Bypass (FR-21)
+# By default (no identity set), we operate as superuser
 # =============================================================================
 
+# Verify we are superuser
+query I
+SELECT rbac_is_superuser();
+----
+true
+
+# T-05-05: Superuser queries table with no grants
+# As superuser, we can query secret_table even though no role has SELECT on it
+query I
+SELECT COUNT(*) FROM secret_table;
+----
+1
+
+query IT
+SELECT * FROM secret_table;
+----
+1	Top Secret
+
+# T-05-06: Superuser queries forbidden column
+# The secret_notes column has no grants but superuser can access it
+query I
+SELECT COUNT(secret_notes) FROM orders;
+----
+3
+
+query T
+SELECT secret_notes FROM orders WHERE id = 1;
+----
+Internal note 1
+
+# T-05-07: Superuser queries table with row policy (no filter applied)
+# us_analyst has row policy to see only US rows, but superuser sees all
+query I
+SELECT COUNT(*) FROM orders;
+----
+3
+
+query I
+SELECT COUNT(*) FROM orders WHERE region = 'EU';
+----
+1
+
+# T-05-08: Default identity (no identity set) treated as superuser
+# This is already verified above - superuser can access everything
+
 # =============================================================================
-# 6.1 Table-Level Enforcement
+# Verify grant setup is correct (for use by other tests)
 # =============================================================================
 
-# Verify analyst has access to orders
+# Verify analyst has table-level SELECT on orders
 query I
 SELECT COUNT(*) FROM duckdb_table_privileges 
 WHERE grantee = 'analyst' AND table_name = 'orders';
@@ -71,124 +122,12 @@ WHERE grantee = 'analyst' AND table_name = 'secret_table';
 ----
 0
 
-# T-06-01: User with no grants queries any table - should fail
-# (Would test with: SET ROLE viewer; SELECT * FROM secret_table;)
-# Expected: ERROR: Permission denied on table 'secret_table'
-
-# T-06-02: User with grant on table A queries table A - should succeed
-# (Would test with: SET ROLE analyst; SELECT * FROM orders;)
-# Expected: PASS
-
-# T-06-03: User with grant on table A queries table B (no grant) - should fail
-# (Would test with: SET ROLE analyst; SELECT * FROM secret_table;)
-# Expected: ERROR: Permission denied on table 'secret_table'
-
-# =============================================================================
-# 6.2 Column-Level Enforcement
-# =============================================================================
-
-# Verify viewer has column grants
+# Verify us_analyst has row policy
 query I
-SELECT COUNT(*) FROM duckdb_column_privileges 
-WHERE grantee = 'viewer' AND table_name = 'orders';
-----
-3
-
-# T-03-07: SELECT allowed column - succeeds
-# (Would test with: SET ROLE viewer; SELECT id, customer FROM orders;)
-# Expected: PASS
-
-# T-03-08: SELECT forbidden column explicitly - should fail
-# (Would test with: SET ROLE viewer; SELECT secret_notes FROM orders;)
-# Expected: ERROR: Permission denied on column 'secret_notes' of table 'orders'
-
-# T-03-09: SELECT * with forbidden columns - should fail (MVP limitation)
-# (Would test with: SET ROLE viewer; SELECT * FROM orders;)
-# Expected: ERROR: Permission denied on column 'secret_notes' of table 'orders'
-
-# T-03-10: Forbidden column in WHERE clause - should fail
-# (Would test with: SET ROLE viewer; SELECT id FROM orders WHERE secret_notes = 'x';)
-# Expected: ERROR: Permission denied on column 'secret_notes'
-
-# T-03-11: Forbidden column in ORDER BY - should fail
-# (Would test with: SET ROLE viewer; SELECT id FROM orders ORDER BY amount;)
-# Expected: ERROR: Permission denied on column 'amount'
-
-# =============================================================================
-# 6.3 Row Policy Enforcement
-# =============================================================================
-
-statement ok
-CREATE ROLE us_analyst;
-
-statement ok
-GRANT SELECT ON orders TO us_analyst;
-
-statement ok
-CREATE ROW POLICY us_only ON orders FOR SELECT USING (region = 'US') TO us_analyst;
-
-# T-04-10: Query table with row policy - only matching rows returned
-# (Would test with: SET ROLE us_analyst; SELECT COUNT(*) FROM orders;)
-# Expected: 2 (only US rows)
-
-# T-04-11: No policy for user's role - all rows visible
-# (Would test with: SET ROLE analyst; SELECT COUNT(*) FROM orders;)
-# Expected: 3 (all rows, analyst has no policy)
-
-# =============================================================================
-# 6.4 Superuser Bypass (FR-21)
-# =============================================================================
-
-# T-05-05: Superuser queries table with no grants
-# As superuser (default), we can query anything
-query I
-SELECT COUNT(*) FROM secret_table;
+SELECT COUNT(*) FROM duckdb_row_policies
+WHERE grantee = 'us_analyst' AND table_name = 'orders';
 ----
 1
-
-# T-05-06: Superuser queries forbidden column
-query I
-SELECT COUNT(secret_notes) FROM orders;
-----
-3
-
-# T-05-07: Superuser queries table with row policy (no filter applied)
-query I
-SELECT COUNT(*) FROM orders;
-----
-3
-
-# =============================================================================
-# 6.5 Inherited Permissions
-# =============================================================================
-
-statement ok
-CREATE ROLE data_team;
-
-statement ok
-CREATE ROLE senior_analyst;
-
-statement ok
-GRANT SELECT ON orders TO data_team;
-
-statement ok
-GRANT data_team TO senior_analyst;
-
-# T-06-04: User is member of role with grant - inherits access
-# Verify membership exists
-query I
-SELECT COUNT(*) FROM duckdb_role_members 
-WHERE role_name = 'data_team' AND member = 'senior_analyst';
-----
-1
-
-# T-06-05: User is member of multiple roles - union of all grants
-statement ok
-GRANT SELECT ON secret_table TO senior_analyst;
-
-# senior_analyst now has:
-# - SELECT on orders (via data_team)
-# - SELECT on secret_table (direct)
 
 # =============================================================================
 # Cleanup
@@ -201,19 +140,7 @@ statement ok
 REVOKE SELECT ON orders FROM analyst;
 
 statement ok
-REVOKE SELECT (id, customer, region) ON orders FROM viewer;
-
-statement ok
 REVOKE SELECT ON orders FROM us_analyst;
-
-statement ok
-REVOKE SELECT ON orders FROM data_team;
-
-statement ok
-REVOKE data_team FROM senior_analyst;
-
-statement ok
-REVOKE SELECT ON secret_table FROM senior_analyst;
 
 statement ok
 DROP TABLE orders;
@@ -225,14 +152,4 @@ statement ok
 DROP ROLE analyst;
 
 statement ok
-DROP ROLE viewer;
-
-statement ok
 DROP ROLE us_analyst;
-
-statement ok
-DROP ROLE data_team;
-
-statement ok
-DROP ROLE senior_analyst;
-

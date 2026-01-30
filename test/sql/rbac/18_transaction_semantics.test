@@ -1,0 +1,78 @@
+# name: test/sql/rbac/18_transaction_semantics.test
+# description: RBAC DDL does not respect transaction commit/rollback
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup
+# =============================================================================
+
+statement ok
+CREATE TABLE tx_data (id INTEGER);
+
+statement ok
+INSERT INTO tx_data VALUES (1);
+
+# =============================================================================
+# Rollback behavior (RBAC DDL is non-transactional)
+# Note: RBAC DDL persists even after ROLLBACK.
+# =============================================================================
+
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+CREATE ROLE tx_role;
+
+statement ok
+GRANT SELECT ON tx_data TO tx_role;
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT COUNT(*) FROM duckdb_roles WHERE role_name = 'tx_role';
+----
+1
+
+query I
+SELECT COUNT(*) FROM duckdb_table_privileges WHERE grantee = 'tx_role';
+----
+1
+
+# =============================================================================
+# Commit should persist RBAC DDL (role already exists after rollback)
+# =============================================================================
+
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+GRANT SELECT ON tx_data TO tx_role;
+
+statement ok
+COMMIT;
+
+query I
+SELECT COUNT(*) FROM duckdb_roles WHERE role_name = 'tx_role';
+----
+1
+
+query I
+SELECT COUNT(*) FROM duckdb_table_privileges WHERE grantee = 'tx_role';
+----
+1
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+REVOKE SELECT ON tx_data FROM tx_role;
+
+statement ok
+DROP ROLE tx_role;
+
+statement ok
+DROP TABLE tx_data;
