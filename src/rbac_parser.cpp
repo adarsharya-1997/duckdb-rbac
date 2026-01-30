@@ -910,7 +910,6 @@ bool RBACParserExtension::TryParseDropRowPolicy(const string &upper, const strin
 RBACParserExtension::RBACParserExtension() {
 	parse_function = ParseFunction;
 	plan_function = PlanFunction;
-	parser_override = ParserOverride;
 }
 
 ParserExtensionParseResult RBACParserExtension::ParseFunction(ParserExtensionInfo *info, const string &query) {
@@ -977,55 +976,6 @@ ParserExtensionPlanResult RBACParserExtension::PlanFunction(ParserExtensionInfo 
 	}
 	result.parameters.push_back(Value(cols_str));
 
-	return result;
-}
-
-//===--------------------------------------------------------------------===//
-// Spike 0.6C: Parser Override (keep for now)
-//===--------------------------------------------------------------------===//
-
-ParserOverrideResult RBACParserExtension::ParserOverride(ParserExtensionInfo *info, const string &query) {
-	string trimmed = query;
-	StringUtil::Trim(trimmed);
-	string upper = StringUtil::Upper(trimmed);
-
-	if (StringUtil::EndsWith(upper, ";")) {
-		upper = upper.substr(0, upper.length() - 1);
-		StringUtil::Trim(upper);
-	}
-
-	// Spike 0.6C: SELECT * rewriting for col_test_rewrite
-	if (upper == "SELECT * FROM COL_TEST_REWRITE" ||
-	    upper == "SELECT * FROM COL_TEST_REWRITE ORDER BY A") {
-		fprintf(stderr, "[Spike 0.6C] Intercepted: %s\n", query.c_str());
-
-		string rewritten;
-		if (upper == "SELECT * FROM COL_TEST_REWRITE ORDER BY A") {
-			rewritten = "SELECT a, b FROM col_test_rewrite ORDER BY a";
-		} else {
-			rewritten = "SELECT a, b FROM col_test_rewrite";
-		}
-
-		fprintf(stderr, "[Spike 0.6C] Rewriting to: %s\n", rewritten.c_str());
-
-		try {
-			Parser parser;
-			parser.ParseQuery(rewritten);
-
-			ParserOverrideResult result;
-			result.type = ParserExtensionResultType::PARSE_SUCCESSFUL;
-			result.statements = std::move(parser.statements);
-			return result;
-		} catch (Exception &e) {
-			ParserOverrideResult result;
-			result.type = ParserExtensionResultType::DISPLAY_ORIGINAL_ERROR;
-			result.error = ErrorData(e);
-			return result;
-		}
-	}
-
-	ParserOverrideResult result;
-	result.type = ParserExtensionResultType::DISPLAY_ORIGINAL_ERROR;
 	return result;
 }
 

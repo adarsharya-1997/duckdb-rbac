@@ -79,9 +79,6 @@ public:
 	static ParserExtensionPlanResult PlanFunction(ParserExtensionInfo *info, ClientContext &context,
 	                                               unique_ptr<ParserExtensionParseData> parse_data);
 
-	//! Parser override: intercepts ALL SQL before DuckDB's parser (Spike 0.6C)
-	static ParserOverrideResult ParserOverride(ParserExtensionInfo *info, const string &query);
-
 private:
 	// Parsing helpers
 	static bool TryParseCreateRole(const string &upper, const string &original, unique_ptr<RBACParseData> &out);

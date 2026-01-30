@@ -45,14 +45,6 @@ private:
 	static void InjectRowPolicies(ClientContext &context, unique_ptr<LogicalOperator> &op_ptr, LogicalGet &get,
 	                              const string &schema_name, const string &table_name,
 	                              const vector<string> &effective_roles, const string &user_name);
-
-	// ===== Spike code (kept for backward compatibility during transition) =====
-	//! Legacy: Walk without context (for spike tests)
-	static void WalkPlanWithParentLegacy(unique_ptr<LogicalOperator> &op_ptr);
-	//! Legacy: Inject hardcoded filter (Spike 0.3)
-	static void InjectHardcodedFilter(unique_ptr<LogicalOperator> &op_ptr, LogicalGet &get);
-	//! Legacy: Filter column_ids (Spike 0.6B)
-	static void FilterColumnIds(LogicalGet &get, const string &forbidden_column);
 };
 
 //! Register the RBAC optimizer extension
