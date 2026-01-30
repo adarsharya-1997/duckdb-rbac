@@ -25,6 +25,10 @@ struct RBACState : public ClientContextState {
 
 	//! Get RBACState from a ClientContext, creating it if it doesn't exist
 	static shared_ptr<RBACState> Get(ClientContext &context);
+
+	//! Get all effective roles (direct + inherited via duckdb_role_members)
+	//! This queries the database to resolve role membership
+	static vector<string> GetEffectiveRoles(ClientContext &context);
 };
 
 //! RBACExtensionCallback handles connection lifecycle events
@@ -38,7 +42,10 @@ public:
 //! Register RBAC scalar functions (rbac_current_user, etc.)
 void RegisterRBACScalarFunctions(ExtensionLoader &loader);
 
-//! Create RBAC system tables (duckdb_roles, duckdb_table_privileges, etc.)
+//! Create RBAC system tables and views (duckdb_roles, duckdb_my_roles, etc.)
 void CreateRBACSystemTables(DatabaseInstance &db);
+
+//! Create RBAC introspection views (called after system tables exist)
+void CreateRBACIntrospectionViews(DatabaseInstance &db);
 
 } // namespace duckdb

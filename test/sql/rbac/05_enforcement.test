@@ -3,7 +3,7 @@
 # group: [rbac]
 # requirements: US-1, US-2, US-3, US-4, FR-12, FR-13, FR-21
 
-require rbac
+require quack
 
 # =============================================================================
 # Setup - Create test data

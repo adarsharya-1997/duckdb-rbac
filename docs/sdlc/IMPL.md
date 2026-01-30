@@ -29,15 +29,15 @@ This document tracks the implementation of the RBAC extension. Each phase has:
 
 | Phase | Status | Tests Passing |
 |-------|--------|---------------|
-| Phase 0: Spikes | ✅ Complete | 6/6 |
+| Phase 0: Spikes | ✅ Complete | 54 assertions |
 | Phase 1: Foundation | ✅ Complete | 15 assertions |
-| Phase 2: DDL Parsing | ⬜ Not Started | 0/31 |
-| Phase 3: Storage & Grants | ⬜ Not Started | 0/20 |
-| Phase 4: Enforcement | ⬜ Not Started | 0/15 |
-| Phase 5: Row Policies | ⬜ Not Started | 0/16 |
-| Phase 6: Polish | ⬜ Not Started | 0/44 |
+| Phase 2: DDL Parsing | ✅ Complete | 50 assertions |
+| Phase 3: Storage & Grants | ✅ Complete | 142 assertions |
+| Phase 4: Enforcement | ⬜ Not Started | - |
+| Phase 5: Row Policies | ⬜ Not Started | - |
+| Phase 6: Polish | ⬜ Not Started | - |
 
-**Overall:** 0/132 tests passing
+**Overall:** 207 assertions passing (15+50+33+31+51+27)
 
 ---
 
@@ -211,49 +211,50 @@ test/sql/rbac/01_roles.test - ALL PASS (50 assertions)
 
 **Goal:** Grants correctly stored, retrieved, and visible via introspection.
 
-**Duration:** 2 days  
+**Status:** ✅ Complete | 142 assertions (33+31+51+27)  
 **Dependencies:** Phase 2 completed  
-**Test Files:** `test/sql/rbac/02_table_privileges.test`, `test/sql/rbac/03_column_privileges.test`, `test/sql/rbac/06_introspection.test`
+**Test Files:** `02_table_privileges.test`, `03_column_privileges.test`, `06_introspection.test`, `06b_effective_roles.test`
 
 ### Tasks
 
 #### 3.1 Grant Storage
-- [ ] Table grants stored with (grantee, table_name, privilege)
-- [ ] Column grants stored with (grantee, table_name, column_name)
-- [ ] Grants survive across queries (persistent in tables)
-- [ ] Grants are idempotent (duplicate grant = no error)
+- [x] Table grants stored with (grantee, table_name, privilege)
+- [x] Column grants stored with (grantee, table_name, column_name)
+- [x] Grants survive across queries (persistent in tables)
+- [x] Grants are idempotent (duplicate grant = no error)
 
 #### 3.2 Name-Based Grant Persistence (FR-9)
-- [ ] Grants reference tables by name, not OID
-- [ ] Grants survive table DROP/RECREATE cycle
-- [ ] Orphaned grants remain in base tables
-- [ ] Test: Drop table, recreate with same name, grant still applies
+- [x] Grants reference tables by name, not OID
+- [x] Grants survive table DROP/RECREATE cycle
+- [x] Orphaned grants remain in base tables
+- [x] Test: Drop table, recreate with same name, grant still applies
 
 #### 3.3 Effective Roles Computation
-- [ ] Implement `get_effective_roles(session_roles)` function
-- [ ] Include direct roles from session
-- [ ] Include inherited roles from `duckdb_role_members`
-- [ ] Cache result in `RBACState` for performance
+- [x] Implement `RBACState::GetEffectiveRoles()` function
+- [x] Include direct roles from session
+- [x] Include inherited roles from `duckdb_role_members`
+- [x] `rbac_effective_roles()` scalar function
 
 #### 3.4 Introspection Views
-- [ ] Create `duckdb_effective_privileges` view
+- [x] Create `duckdb_effective_privileges` view
   - Shows current user's accessible tables/columns
   - Filters out orphaned grants (tables that don't exist)
-- [ ] Create `duckdb_my_roles` view
+- [x] Create `duckdb_my_roles` view
   - Shows current user's effective roles
 
 ### Acceptance Criteria
 
 ```
-test/sql/rbac/02_table_privileges.test - ALL PASS
-test/sql/rbac/03_column_privileges.test - ALL PASS  
-test/sql/rbac/06_introspection.test - ALL PASS
+test/sql/rbac/02_table_privileges.test - ALL PASS (33 assertions)
+test/sql/rbac/03_column_privileges.test - ALL PASS (31 assertions)
+test/sql/rbac/06_introspection.test - ALL PASS (51 assertions)
+test/sql/rbac/06b_effective_roles.test - ALL PASS (27 assertions)
 ```
 
-- [ ] Grants stored correctly in system tables
-- [ ] Grants survive DDL operations
-- [ ] Introspection views return correct data
-- [ ] Inherited permissions work via role membership
+- [x] Grants stored correctly in system tables
+- [x] Grants survive DDL operations
+- [x] Introspection views return correct data
+- [x] Inherited permissions work via role membership
 
 ---
 

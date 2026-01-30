@@ -3,7 +3,7 @@
 # group: [rbac]
 # requirements: DDL Syntax from LLD Section 4
 
-require rbac
+require quack
 
 # =============================================================================
 # Setup - Create test objects

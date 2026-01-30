@@ -3,7 +3,7 @@
 # group: [rbac]
 # requirements: Edge cases from LLD Section 12.5
 
-require rbac
+require quack
 
 # =============================================================================
 # Setup

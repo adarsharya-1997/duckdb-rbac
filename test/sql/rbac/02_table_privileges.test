@@ -3,7 +3,7 @@
 # group: [rbac]
 # requirements: FR-6, FR-7, FR-8, FR-9, US-6
 
-require rbac
+require quack
 
 # =============================================================================
 # Setup
@@ -53,7 +53,7 @@ GRANT SELECT ON orders TO analyst;
 statement error
 GRANT SELECT ON nonexistent_table TO analyst;
 ----
-Table 'nonexistent_table' does not exist
+Table 'main.nonexistent_table' does not exist
 
 # T-02-03: Grant SELECT to non-existent role
 statement error

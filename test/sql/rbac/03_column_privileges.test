@@ -3,7 +3,7 @@
 # group: [rbac]
 # requirements: FR-10, FR-11, FR-12, FR-13, US-7
 
-require rbac
+require quack
 
 # =============================================================================
 # Setup
@@ -40,7 +40,7 @@ GRANT SELECT (id, name, department) ON employees TO analyst;
 statement error
 GRANT SELECT (nonexistent_col) ON employees TO analyst;
 ----
-Column 'nonexistent_col' does not exist
+Column 'nonexistent_col' does not exist in table 'main.employees'
 
 # T-03-03: Grant SELECT on additional columns (additive)
 statement ok

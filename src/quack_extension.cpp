@@ -27,6 +27,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Create RBAC system tables (duckdb_roles, duckdb_table_privileges, etc.)
 	CreateRBACSystemTables(db);
+
+	// Create RBAC introspection views (duckdb_my_roles, duckdb_effective_privileges)
+	// Must be called after scalar functions are registered
+	CreateRBACIntrospectionViews(db);
 }
 
 void QuackExtension::Load(ExtensionLoader &loader) {

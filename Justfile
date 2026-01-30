@@ -33,8 +33,16 @@ run:
 
 # Run tests on debug build
 test:
+    # Phase 1
     ./build/debug/test/unittest "test/sql/rbac/00_extension_load.test"
+
+    # Phase 2
     ./build/debug/test/unittest "test/sql/rbac/01_roles.test"
+
+    # Phase 3
+    ./build/debug/test/unittest "test/sql/rbac/02_table_privileges.test"
+    ./build/debug/test/unittest "test/sql/rbac/03_column_privileges.test"
+    ./build/debug/test/unittest "test/sql/rbac/06_introspection.test"
 
 spike:
     ./build/debug/test/unittest "test/sql/rbac/00_spikes.test"

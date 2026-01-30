@@ -3,7 +3,7 @@
 # group: [rbac]
 # requirements: FR-14, FR-15, FR-16, FR-17, FR-18, US-8
 
-require rbac
+require quack
 
 # =============================================================================
 # Setup

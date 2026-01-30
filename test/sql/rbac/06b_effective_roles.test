@@ -1,0 +1,116 @@
+# name: test/sql/rbac/06b_effective_roles.test
+# description: Test effective roles computation with role inheritance
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup: Create role hierarchy
+# =============================================================================
+
+statement ok
+CREATE ROLE base_role;
+
+statement ok
+CREATE ROLE mid_role;
+
+statement ok
+CREATE ROLE top_role;
+
+# Create hierarchy: top_role -> mid_role -> base_role
+# (top_role inherits mid_role, mid_role inherits base_role)
+statement ok
+GRANT base_role TO mid_role;
+
+statement ok
+GRANT mid_role TO top_role;
+
+# Create test table and grants at different levels
+statement ok
+CREATE TABLE test_data (id INTEGER, value VARCHAR);
+
+statement ok
+GRANT SELECT ON test_data TO base_role;
+
+# =============================================================================
+# Test: Set identity with top_role only
+# Effective roles should include: top_role, mid_role, base_role
+# =============================================================================
+
+statement ok
+SELECT * FROM rbac_set_identity('test_user', ['top_role'], false);
+
+# Direct roles should be just top_role
+query I
+SELECT len(rbac_current_roles());
+----
+1
+
+query T
+SELECT rbac_current_roles()[1];
+----
+top_role
+
+# Effective roles should include all inherited roles
+query I
+SELECT len(rbac_effective_roles());
+----
+3
+
+# Check that all three roles are in effective_roles (sorted)
+query T
+SELECT UNNEST(rbac_effective_roles()) AS role ORDER BY role;
+----
+base_role
+mid_role
+top_role
+
+# duckdb_my_roles view should show all effective roles
+query T
+SELECT role_name FROM duckdb_my_roles ORDER BY role_name;
+----
+base_role
+mid_role
+top_role
+
+# =============================================================================
+# Test: Effective privileges through inheritance
+# User has top_role, which inherits mid_role, which inherits base_role
+# base_role has SELECT on test_data
+# So user should see test_data in effective_privileges
+# =============================================================================
+
+query I
+SELECT COUNT(*) FROM duckdb_effective_privileges WHERE table_name = 'test_data';
+----
+1
+
+query TT
+SELECT table_name, grantee FROM duckdb_effective_privileges WHERE table_name = 'test_data';
+----
+test_data	base_role
+
+# =============================================================================
+# Cleanup (no identity reset needed - connection will end)
+# =============================================================================
+
+statement ok
+REVOKE SELECT ON test_data FROM base_role;
+
+statement ok
+DROP TABLE test_data;
+
+statement ok
+REVOKE mid_role FROM top_role;
+
+statement ok
+REVOKE base_role FROM mid_role;
+
+statement ok
+DROP ROLE top_role;
+
+statement ok
+DROP ROLE mid_role;
+
+statement ok
+DROP ROLE base_role;

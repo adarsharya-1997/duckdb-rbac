@@ -270,6 +270,14 @@ static void RBACDDLExecute(ClientContext &context, TableFunctionInput &data, Dat
 	}
 
 	case RBACStatementType::REVOKE_TABLE: {
+		// Check role exists
+		sql = StringUtil::Format("SELECT 1 FROM duckdb_roles WHERE role_name = '%s'",
+		                         StringUtil::Replace(bind_data.role_name, "'", "''"));
+		auto role_check = ExecuteSQL(context, sql);
+		if (role_check->HasError() || !HasRows(*role_check)) {
+			throw InvalidInputException("Role '%s' does not exist", bind_data.role_name);
+		}
+
 		sql = StringUtil::Format(
 		    "DELETE FROM duckdb_table_privileges WHERE grantee = '%s' AND table_schema = '%s' "
 		    "AND table_name = '%s' AND privilege_type = 'SELECT'",
@@ -341,6 +349,14 @@ static void RBACDDLExecute(ClientContext &context, TableFunctionInput &data, Dat
 	}
 
 	case RBACStatementType::REVOKE_COLUMN: {
+		// Check role exists
+		sql = StringUtil::Format("SELECT 1 FROM duckdb_roles WHERE role_name = '%s'",
+		                         StringUtil::Replace(bind_data.role_name, "'", "''"));
+		auto role_check = ExecuteSQL(context, sql);
+		if (role_check->HasError() || !HasRows(*role_check)) {
+			throw InvalidInputException("Role '%s' does not exist", bind_data.role_name);
+		}
+
 		for (const auto &col : bind_data.column_names) {
 			sql = StringUtil::Format(
 			    "DELETE FROM duckdb_column_privileges WHERE grantee = '%s' AND table_schema = '%s' "
