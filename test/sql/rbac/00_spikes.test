@@ -86,3 +86,40 @@ query I
 DROP ROLE test_role
 ----
 Role dropped: test_role
+
+# ===== Spike 0.5: Expression binding =====
+
+# Basic case: integer comparison with parsed expression "id > 0"
+statement ok
+CREATE TABLE policy_test (id INT, name VARCHAR)
+
+statement ok
+INSERT INTO policy_test VALUES (1, 'visible'), (0, 'hidden'), (2, 'also_visible')
+
+query IT
+SELECT * FROM policy_test ORDER BY id
+----
+1	visible
+2	also_visible
+
+# Error case: referencing non-existent column should fail
+statement ok
+CREATE TABLE policy_bad_column (id INT, value INT)
+
+statement error
+SELECT * FROM policy_bad_column
+----
+Column 'nonexistent_column' not found
+
+# String equality filter: status = 'active'
+statement ok
+CREATE TABLE policy_string_filter (id INT, status VARCHAR)
+
+statement ok
+INSERT INTO policy_string_filter VALUES (1, 'active'), (2, 'inactive'), (3, 'active')
+
+query IT
+SELECT * FROM policy_string_filter ORDER BY id
+----
+1	active
+3	active

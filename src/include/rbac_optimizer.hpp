@@ -27,8 +27,11 @@ private:
 	//! Walk the plan tree with ability to modify (for filter injection)
 	static void WalkPlanWithParent(unique_ptr<LogicalOperator> &op_ptr);
 
-	//! Inject a LogicalFilter above a LogicalGet (Spike 0.3)
-	static void InjectFilter(unique_ptr<LogicalOperator> &op_ptr, LogicalGet &get);
+	//! Inject a LogicalFilter with hardcoded expression (Spike 0.3)
+	static void InjectHardcodedFilter(unique_ptr<LogicalOperator> &op_ptr, LogicalGet &get);
+
+	//! Inject a LogicalFilter with parsed expression string (Spike 0.5)
+	static void InjectParsedFilter(unique_ptr<LogicalOperator> &op_ptr, LogicalGet &get, const string &filter_expr);
 };
 
 //! Register the RBAC optimizer extension
