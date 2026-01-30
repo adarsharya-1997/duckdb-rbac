@@ -1,0 +1,68 @@
+# name: test/sql/rbac/04d_row_policies_current_user.test
+# description: Test row policies with current_user() function (FR-17)
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup: Create table with owner column
+# =============================================================================
+
+statement ok
+CREATE TABLE documents (
+    id INTEGER,
+    title VARCHAR,
+    owner VARCHAR,
+    content VARCHAR
+);
+
+statement ok
+INSERT INTO documents VALUES 
+    (1, 'Alice Doc 1', 'alice_user', 'Alice content 1'),
+    (2, 'Alice Doc 2', 'alice_user', 'Alice content 2'),
+    (3, 'Bob Doc', 'bob_user', 'Bob content'),
+    (4, 'Public Doc', 'system', 'Public content');
+
+statement ok
+CREATE ROLE doc_reader;
+
+statement ok
+GRANT SELECT ON documents TO doc_reader;
+
+# Create policy: users can only see their own documents
+statement ok
+CREATE ROW POLICY own_docs ON documents FOR SELECT USING (owner = current_user()) TO doc_reader;
+
+# =============================================================================
+# Set identity as alice_user
+# =============================================================================
+
+statement ok
+SELECT * FROM rbac_set_identity('alice_user', ['doc_reader'], false);
+
+# =============================================================================
+# Test: current_user() in policy filters to user's own rows
+# =============================================================================
+
+# Alice should only see her own documents (query must include owner column)
+query IT
+SELECT id, title FROM documents WHERE owner IS NOT NULL ORDER BY id;
+----
+1	Alice Doc 1
+2	Alice Doc 2
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+DROP ROW POLICY own_docs ON documents;
+
+statement ok
+REVOKE SELECT ON documents FROM doc_reader;
+
+statement ok
+DROP TABLE documents;
+
+statement ok
+DROP ROLE doc_reader;

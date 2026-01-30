@@ -6,13 +6,18 @@
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/extension_callback_manager.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/common/column_index.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/comparison_expression.hpp"
+#include "duckdb/parser/expression/function_expression.hpp"
+#include "duckdb/parser/expression/conjunction_expression.hpp"
+#include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
 
@@ -24,9 +29,19 @@ namespace duckdb {
 
 class SimpleExpressionBinder {
 public:
-	SimpleExpressionBinder(LogicalGet &get) : get(get) {
+	SimpleExpressionBinder(LogicalGet &get, const string &current_user)
+	    : get(get), current_user(current_user) {
+		// Build map from column name to OUTPUT index (position in scanned columns)
+		auto &column_ids = get.GetColumnIds();
+		for (idx_t output_idx = 0; output_idx < column_ids.size(); output_idx++) {
+			idx_t col_idx = column_ids[output_idx].GetPrimaryIndex();
+			if (col_idx < get.names.size()) {
+				scanned_column_map[get.names[col_idx]] = output_idx;
+			}
+		}
+		// Build map from column name to table column index
 		for (idx_t i = 0; i < get.names.size(); i++) {
-			column_map[get.names[i]] = i;
+			all_column_map[get.names[i]] = i;
 		}
 	}
 
@@ -38,6 +53,12 @@ public:
 			return BindConstant(expr.Cast<ConstantExpression>());
 		case ExpressionClass::COMPARISON:
 			return BindComparison(expr.Cast<ComparisonExpression>());
+		case ExpressionClass::FUNCTION:
+			return BindFunction(expr.Cast<FunctionExpression>());
+		case ExpressionClass::CONJUNCTION:
+			return BindConjunction(expr.Cast<ConjunctionExpression>());
+		case ExpressionClass::CAST:
+			return BindCast(expr.Cast<CastExpression>());
 		default:
 			throw NotImplementedException("SimpleExpressionBinder: unsupported expression type %s",
 			                              ExpressionClassToString(expr.GetExpressionClass()));
@@ -55,17 +76,41 @@ private:
 			throw BinderException("Invalid column reference");
 		}
 
-		auto it = column_map.find(col_name);
-		if (it == column_map.end()) {
+		// Check if column is already being scanned
+		auto it = scanned_column_map.find(col_name);
+		if (it != scanned_column_map.end()) {
+			// Column already in scan, use existing binding
+			idx_t output_idx = it->second;
+			auto &column_ids = get.GetColumnIds();
+			idx_t table_col_idx = column_ids[output_idx].GetPrimaryIndex();
+			LogicalType col_type = get.returned_types[table_col_idx];
+			return make_uniq<BoundColumnRefExpression>(
+				col_type,
+				ColumnBinding(get.table_index, output_idx)
+			);
+		}
+
+		// Column not being scanned - need to add it for row policy filters
+		// Find the column in all_column_map (table's column list)
+		auto all_it = all_column_map.find(col_name);
+		if (all_it == all_column_map.end()) {
 			throw BinderException("Column '%s' not found in table", col_name);
 		}
 
-		idx_t col_idx = it->second;
-		LogicalType col_type = get.returned_types[col_idx];
+		idx_t table_col_idx = all_it->second;
+		LogicalType col_type = get.returned_types[table_col_idx];
+
+		// Add the column to the scan
+		auto &mutable_column_ids = get.GetMutableColumnIds();
+		idx_t new_output_idx = mutable_column_ids.size();
+		mutable_column_ids.push_back(ColumnIndex(static_cast<column_t>(table_col_idx)));
+
+		// Update our map
+		scanned_column_map[col_name] = new_output_idx;
 
 		return make_uniq<BoundColumnRefExpression>(
 			col_type,
-			ColumnBinding(get.table_index, col_idx)
+			ColumnBinding(get.table_index, new_output_idx)
 		);
 	}
 
@@ -83,16 +128,66 @@ private:
 		);
 	}
 
+	unique_ptr<Expression> BindFunction(FunctionExpression &expr) {
+		// Handle current_user() function - replace with constant
+		if (StringUtil::Lower(expr.function_name) == "current_user" && expr.children.empty()) {
+			return make_uniq<BoundConstantExpression>(Value(current_user));
+		}
+		// Handle rbac_current_user() as well
+		if (StringUtil::Lower(expr.function_name) == "rbac_current_user" && expr.children.empty()) {
+			return make_uniq<BoundConstantExpression>(Value(current_user));
+		}
+		throw NotImplementedException("SimpleExpressionBinder: unsupported function '%s'", expr.function_name);
+	}
+
+	unique_ptr<Expression> BindConjunction(ConjunctionExpression &expr) {
+		auto conjunction = make_uniq<BoundConjunctionExpression>(expr.type);
+		for (auto &child : expr.children) {
+			conjunction->children.push_back(Bind(*child));
+		}
+		return conjunction;
+	}
+
+	unique_ptr<Expression> BindCast(CastExpression &expr) {
+		auto child = Bind(*expr.child);
+		// For constant casts (like boolean literals), evaluate at bind time
+		if (child->type == ExpressionType::VALUE_CONSTANT) {
+			auto &const_expr = child->Cast<BoundConstantExpression>();
+			// Handle boolean casts specially (true/false as strings)
+			if (expr.cast_type == LogicalType::BOOLEAN && const_expr.value.type().id() == LogicalTypeId::VARCHAR) {
+				string val = StringUtil::Lower(const_expr.value.ToString());
+				if (val == "true" || val == "t" || val == "1") {
+					return make_uniq<BoundConstantExpression>(Value::BOOLEAN(true));
+				} else if (val == "false" || val == "f" || val == "0") {
+					return make_uniq<BoundConstantExpression>(Value::BOOLEAN(false));
+				}
+			}
+			// Try generic cast
+			try {
+				Value casted = const_expr.value.DefaultCastAs(expr.cast_type);
+				return make_uniq<BoundConstantExpression>(casted);
+			} catch (...) {
+				// If cast fails, just return the original
+				return child;
+			}
+		}
+		// For non-constant casts, just return the child
+		return child;
+	}
+
 	LogicalGet &get;
-	case_insensitive_map_t<idx_t> column_map;
+	string current_user;
+	case_insensitive_map_t<idx_t> scanned_column_map;  // column name -> output index
+	case_insensitive_map_t<idx_t> all_column_map;      // column name -> table column index
 };
 
-static unique_ptr<Expression> ParseAndBindExpression(const string &expr_str, LogicalGet &get) {
+static unique_ptr<Expression> ParseAndBindExpression(const string &expr_str, LogicalGet &get,
+                                                      const string &current_user) {
 	auto expressions = Parser::ParseExpressionList(expr_str);
 	if (expressions.empty()) {
 		throw BinderException("Failed to parse expression: %s", expr_str);
 	}
-	SimpleExpressionBinder binder(get);
+	SimpleExpressionBinder binder(get, current_user);
 	return binder.Bind(*expressions[0]);
 }
 
@@ -171,7 +266,10 @@ void RBACOptimizerExtension::WalkPlanWithParent(ClientContext &context, unique_p
 			// Check column-level permissions
 			CheckColumnPermissions(context, schema_name, table_name, get, effective_roles, user_name);
 
-			// TODO (Phase 5): Inject row policy filters here
+			// Inject row policy filters (Phase 5)
+			InjectRowPolicies(context, op_ptr, get, schema_name, table_name, effective_roles, user_name);
+			// After injection, op_ptr may have changed, return early
+			return;
 		}
 	}
 
@@ -286,9 +384,89 @@ void RBACOptimizerExtension::CheckColumnPermissions(ClientContext &context, cons
 }
 
 void RBACOptimizerExtension::InjectParsedFilter(unique_ptr<LogicalOperator> &op_ptr, LogicalGet &get,
-                                                 const string &filter_expr) {
-	auto bound_expr = ParseAndBindExpression(filter_expr, get);
+                                                 const string &filter_expr, const string &current_user) {
+	auto bound_expr = ParseAndBindExpression(filter_expr, get, current_user);
 	auto filter = make_uniq<LogicalFilter>(std::move(bound_expr));
+	filter->children.push_back(std::move(op_ptr));
+	op_ptr = std::move(filter);
+}
+
+void RBACOptimizerExtension::InjectRowPolicies(ClientContext &context, unique_ptr<LogicalOperator> &op_ptr,
+                                                LogicalGet &get, const string &schema_name, const string &table_name,
+                                                const vector<string> &effective_roles, const string &user_name) {
+	// No roles = no policies apply (FR-18: no policy = see all rows)
+	if (effective_roles.empty()) {
+		return;
+	}
+
+	// Build IN clause for effective roles
+	string roles_in = "";
+	for (idx_t i = 0; i < effective_roles.size(); i++) {
+		if (i > 0) roles_in += ", ";
+		roles_in += "'" + StringUtil::Replace(effective_roles[i], "'", "''") + "'";
+	}
+
+	// Query all applicable row policies
+	string sql = StringUtil::Format(
+	    "SELECT filter_expression FROM duckdb_row_policies "
+	    "WHERE table_schema = '%s' AND table_name = '%s' AND grantee IN (%s)",
+	    StringUtil::Replace(schema_name, "'", "''"),
+	    StringUtil::Replace(table_name, "'", "''"),
+	    roles_in);
+
+	Connection con(*context.db);
+	auto result = con.Query(sql);
+
+	if (result->HasError()) {
+		return; // No policies or error - see all rows (FR-18)
+	}
+
+	// Collect all filter expressions
+	vector<string> filter_expressions;
+	for (auto &row : *result) {
+		filter_expressions.push_back(row.GetValue<string>(0));
+	}
+
+	// No policies = see all rows (FR-18)
+	if (filter_expressions.empty()) {
+		return;
+	}
+
+	// Parse and bind each expression, then combine with OR (FR-15)
+	vector<unique_ptr<Expression>> bound_expressions;
+	for (const auto &expr_str : filter_expressions) {
+		try {
+			auto bound_expr = ParseAndBindExpression(expr_str, get, user_name);
+			bound_expressions.push_back(std::move(bound_expr));
+		} catch (const Exception &e) {
+			// If a policy expression fails to bind (e.g., column not in scan),
+			// throw an error - this is a security requirement
+			throw PermissionException(
+			    "Row policy cannot be applied: %s. "
+			    "Ensure your query includes all columns referenced by row policies.",
+			    e.what());
+		}
+	}
+
+	if (bound_expressions.empty()) {
+		return;
+	}
+
+	// Combine with OR if multiple expressions
+	unique_ptr<Expression> combined;
+	if (bound_expressions.size() == 1) {
+		combined = std::move(bound_expressions[0]);
+	} else {
+		// Create OR conjunction - must add children one by one
+		auto conjunction = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_OR);
+		for (auto &expr : bound_expressions) {
+			conjunction->children.push_back(std::move(expr));
+		}
+		combined = std::move(conjunction);
+	}
+
+	// Inject the filter
+	auto filter = make_uniq<LogicalFilter>(std::move(combined));
 	filter->children.push_back(std::move(op_ptr));
 	op_ptr = std::move(filter);
 }
@@ -320,19 +498,19 @@ void RBACOptimizerExtension::WalkPlanWithParentLegacy(unique_ptr<LogicalOperator
 
 			// Spike 0.5: Inject parsed filter for "policy_test"
 			if (table_name == "policy_test") {
-				InjectParsedFilter(op_ptr, get, "id > 0");
+				InjectParsedFilter(op_ptr, get, "id > 0", "superuser");
 				return;
 			}
 
 			// Spike 0.5: bad column reference
 			if (table_name == "policy_bad_column") {
-				InjectParsedFilter(op_ptr, get, "nonexistent_column > 0");
+				InjectParsedFilter(op_ptr, get, "nonexistent_column > 0", "superuser");
 				return;
 			}
 
 			// Spike 0.5: string filter
 			if (table_name == "policy_string_filter") {
-				InjectParsedFilter(op_ptr, get, "status = 'active'");
+				InjectParsedFilter(op_ptr, get, "status = 'active'", "superuser");
 				return;
 			}
 

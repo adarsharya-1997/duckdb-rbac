@@ -63,7 +63,7 @@ CREATE ROW POLICY us_only ON orders FOR SELECT USING (region = 'US') TO us_sales
 statement error
 CREATE ROW POLICY bad_policy ON nonexistent_table FOR SELECT USING (x = 1) TO us_sales;
 ----
-Table 'nonexistent_table' does not exist
+Table 'main.nonexistent_table' does not exist
 
 # T-04-03: Create policy for non-existent role
 statement error
@@ -75,13 +75,13 @@ Role 'nonexistent_role' does not exist
 statement error
 CREATE ROW POLICY bad_policy ON orders FOR SELECT USING (nonexistent_column = 'US') TO us_sales;
 ----
-Column 'nonexistent_column' does not exist
+Column 'nonexistent_column' does not exist in table
 
 # T-04-05: Create policy with invalid expression (syntax error)
 statement error
 CREATE ROW POLICY bad_policy ON orders FOR SELECT USING (region = ) TO us_sales;
 ----
-Parser Error
+Invalid filter expression
 
 # T-04-06: Create policy referencing current_user()
 statement ok
@@ -91,7 +91,7 @@ CREATE ROW POLICY owner_policy ON orders FOR SELECT USING (owner = current_user(
 statement error
 CREATE ROW POLICY us_only ON orders FOR SELECT USING (region = 'EU') TO eu_sales;
 ----
-Policy 'us_only' already exists
+Row policy 'us_only' already exists on table
 
 # Create EU policy with different name
 statement ok
@@ -113,7 +113,7 @@ DROP ROW POLICY temp_policy ON orders;
 statement error
 DROP ROW POLICY nonexistent_policy ON orders;
 ----
-Policy 'nonexistent_policy' does not exist
+Row policy 'nonexistent_policy' does not exist on table
 
 # =============================================================================
 # 4.3 Verify policies in introspection

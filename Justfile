@@ -33,16 +33,23 @@ run:
 
 # Run tests on debug build
 test:
-    # Phase 1
-    ./build/debug/test/unittest "test/sql/rbac/00_extension_load.test"
+    # Phase 1 - Foundation
+    ./build/debug/test/unittest "test/sql/rbac/00*"
 
-    # Phase 2
-    ./build/debug/test/unittest "test/sql/rbac/01_roles.test"
+    # Phase 2 - DDL Parsing
+    ./build/debug/test/unittest "test/sql/rbac/01*"
 
-    # Phase 3
-    ./build/debug/test/unittest "test/sql/rbac/02_table_privileges.test"
-    ./build/debug/test/unittest "test/sql/rbac/03_column_privileges.test"
-    ./build/debug/test/unittest "test/sql/rbac/06_introspection.test"
+    # Phase 3 - Storage & Grants
+    ./build/debug/test/unittest "test/sql/rbac/02*"
+    ./build/debug/test/unittest "test/sql/rbac/03*"
+    ./build/debug/test/unittest "test/sql/rbac/06*"
+
+    # Phase 4 - Enforcement
+    ./build/debug/test/unittest "test/sql/rbac/05*"
+
+    # Phase 5 - Row Policies
+    ./build/debug/test/unittest "test/sql/rbac/04*"
+
 
 spike:
     ./build/debug/test/unittest "test/sql/rbac/00_spikes.test"

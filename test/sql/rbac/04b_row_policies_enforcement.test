@@ -1,0 +1,98 @@
+# name: test/sql/rbac/04b_row_policies_enforcement.test
+# description: Test row policy enforcement with non-superuser identity
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup: Create table and role with row policy
+# =============================================================================
+
+statement ok
+CREATE TABLE orders (
+    id INTEGER,
+    customer VARCHAR,
+    amount DECIMAL,
+    region VARCHAR
+);
+
+statement ok
+INSERT INTO orders VALUES 
+    (1, 'Alice', 100.00, 'US'),
+    (2, 'Bob', 200.00, 'EU'),
+    (3, 'Charlie', 150.00, 'US'),
+    (4, 'Diana', 300.00, 'EU'),
+    (5, 'Eve', 250.00, 'APAC');
+
+statement ok
+CREATE ROLE us_sales;
+
+statement ok
+GRANT SELECT ON orders TO us_sales;
+
+# Create row policy: us_sales can only see US region
+statement ok
+CREATE ROW POLICY us_only ON orders FOR SELECT USING (region = 'US') TO us_sales;
+
+# =============================================================================
+# Set non-superuser identity with us_sales role
+# =============================================================================
+
+statement ok
+SELECT * FROM rbac_set_identity('sales_user', ['us_sales'], false);
+
+# Verify identity
+query T
+SELECT rbac_current_user();
+----
+sales_user
+
+query I
+SELECT rbac_is_superuser();
+----
+false
+
+# =============================================================================
+# Test: Row policy filters results
+# =============================================================================
+
+# T-04-10: Only US rows should be visible
+query I
+SELECT COUNT(*) FROM orders;
+----
+2
+
+# Verify the actual rows
+query ITRT
+SELECT id, customer, amount, region FROM orders ORDER BY id;
+----
+1	Alice	100.00	US
+3	Charlie	150.00	US
+
+# T-04-11: Aggregates work on filtered rows
+query R
+SELECT SUM(amount) FROM orders;
+----
+250.00
+
+# Filter on allowed column still works
+query I
+SELECT COUNT(*) FROM orders WHERE amount > 100;
+----
+1
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+DROP ROW POLICY us_only ON orders;
+
+statement ok
+REVOKE SELECT ON orders FROM us_sales;
+
+statement ok
+DROP TABLE orders;
+
+statement ok
+DROP ROLE us_sales;

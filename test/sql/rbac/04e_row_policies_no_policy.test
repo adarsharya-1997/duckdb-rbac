@@ -1,0 +1,65 @@
+# name: test/sql/rbac/04e_row_policies_no_policy.test
+# description: Test that no policy = see all rows (FR-18)
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup: Create table with data
+# =============================================================================
+
+statement ok
+CREATE TABLE data_table (
+    id INTEGER,
+    value VARCHAR
+);
+
+statement ok
+INSERT INTO data_table VALUES 
+    (1, 'row 1'),
+    (2, 'row 2'),
+    (3, 'row 3');
+
+statement ok
+CREATE ROLE no_policy_role;
+
+# Grant table access but NO row policy
+statement ok
+GRANT SELECT ON data_table TO no_policy_role;
+
+# =============================================================================
+# Set non-superuser identity with no_policy_role
+# =============================================================================
+
+statement ok
+SELECT * FROM rbac_set_identity('no_policy_user', ['no_policy_role'], false);
+
+# =============================================================================
+# Test: No policy = see all rows (FR-18)
+# =============================================================================
+
+# User should see ALL rows since there's no row policy
+query IT
+SELECT id, value FROM data_table ORDER BY id;
+----
+1	row 1
+2	row 2
+3	row 3
+
+query I
+SELECT COUNT(*) FROM data_table;
+----
+3
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+REVOKE SELECT ON data_table FROM no_policy_role;
+
+statement ok
+DROP TABLE data_table;
+
+statement ok
+DROP ROLE no_policy_role;

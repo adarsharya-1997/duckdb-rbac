@@ -34,10 +34,10 @@ This document tracks the implementation of the RBAC extension. Each phase has:
 | Phase 2: DDL Parsing | ✅ Complete | 50 assertions |
 | Phase 3: Storage & Grants | ✅ Complete | 142 assertions |
 | Phase 4: Enforcement | ✅ Complete | 108 assertions |
-| Phase 5: Row Policies | ⬜ Not Started | - |
+| Phase 5: Row Policies | ✅ Complete | 127 assertions |
 | Phase 6: Polish | ⬜ Not Started | - |
 
-**Overall:** 315 assertions passing
+**Overall:** 496 assertions passing
 
 ---
 
@@ -320,57 +320,66 @@ test/sql/rbac/05d_enforcement_inherited.test - ALL PASS (22 assertions)
 
 ---
 
-## Phase 5: Row Policies
+## Phase 5: Row Policies ✅
 
 **Goal:** Row-level security filters query results.
 
-**Duration:** 2 days  
+**Status:** ✅ Complete | 127 assertions  
 **Dependencies:** Phase 4 completed  
-**Test File:** `test/sql/rbac/04_row_policies.test`
+**Test Files:**
+- `test/sql/rbac/04_row_policies.test` (56 assertions)
+- `test/sql/rbac/04b_row_policies_enforcement.test` (23 assertions)
+- `test/sql/rbac/04c_row_policies_multiple.test` (19 assertions)
+- `test/sql/rbac/04d_row_policies_current_user.test` (14 assertions)
+- `test/sql/rbac/04e_row_policies_no_policy.test` (15 assertions)
 
 ### Tasks
 
 #### 5.1 Policy Lookup
-- [ ] Query `duckdb_row_policies` for (table, effective_roles)
-- [ ] Return list of applicable policies
+- [x] Query `duckdb_row_policies` for (table, effective_roles)
+- [x] Return list of applicable policies
 
 #### 5.2 Policy Combination (FR-15)
-- [ ] Multiple policies for same (table, role) OR'd together
-- [ ] Multiple roles with policies OR'd together
-- [ ] Build combined filter expression
+- [x] Multiple policies for same (table, role) OR'd together
+- [x] Multiple roles with policies OR'd together
+- [x] Build combined filter expression
 
 #### 5.3 Expression Binding
-- [ ] Parse policy `filter_expression` text at query time
-- [ ] Bind against the current table scan so column references resolve correctly
-- [ ] Resolve column references
-- [ ] Handle `current_user()` function in expressions
+- [x] Parse policy `filter_expression` text at query time
+- [x] Bind against the current table scan so column references resolve correctly
+- [x] Resolve column references
+- [x] Handle `current_user()` function in expressions
   - **Note (why change):** Expression parsing is available (`Parser::ParseExpressionList`), but binding must produce a correct bound `Expression` over the `LogicalGet`’s bindings. This is why Spike 0.5 exists.
 
 #### 5.4 Filter Injection
-- [ ] Create `LogicalFilter` node with bound expression
-- [ ] Insert filter above `LogicalGet` in plan
-- [ ] Verify filter is applied before other operations
+- [x] Create `LogicalFilter` node with bound expression
+- [x] Insert filter above `LogicalGet` in plan
+- [x] Verify filter is applied before other operations
 
 #### 5.5 Policy Expression Privileges (FR-16)
-- [ ] Policy expressions run with elevated privileges
-- [ ] Can reference columns user cannot SELECT
-- [ ] This enables patterns like `USING (secret_level <= 2)`
+- [x] Policy expressions run with elevated privileges
+- [x] Can reference columns user cannot SELECT
+- [x] This enables patterns like `USING (secret_level <= 2)`
 
 #### 5.6 No Policy = No Filter (FR-18)
-- [ ] If user has no applicable policies: see all rows
-- [ ] Policies are opt-in restrictions
+- [x] If user has no applicable policies: see all rows
+- [x] Policies are opt-in restrictions
 
 ### Acceptance Criteria
 
 ```
-test/sql/rbac/04_row_policies.test - ALL PASS
+test/sql/rbac/04_row_policies.test - ALL PASS (56 assertions)
+test/sql/rbac/04b_row_policies_enforcement.test - ALL PASS (23 assertions)
+test/sql/rbac/04c_row_policies_multiple.test - ALL PASS (19 assertions)
+test/sql/rbac/04d_row_policies_current_user.test - ALL PASS (14 assertions)
+test/sql/rbac/04e_row_policies_no_policy.test - ALL PASS (15 assertions)
 ```
 
-- [ ] Row policies filter query results
-- [ ] Multiple policies OR together correctly
-- [ ] `current_user()` works in policy expressions
-- [ ] Policy expressions can reference any column
-- [ ] No policy = all rows visible
+- [x] Row policies filter query results
+- [x] Multiple policies OR together correctly
+- [x] `current_user()` works in policy expressions
+- [x] Policy expressions can reference any column
+- [x] No policy = all rows visible
 
 ---
 

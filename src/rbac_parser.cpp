@@ -7,6 +7,8 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
 #include "duckdb/parser/parser.hpp"
+#include "duckdb/parser/expression/columnref_expression.hpp"
+#include "duckdb/parser/parsed_expression_iterator.hpp"
 #include <regex>
 
 namespace duckdb {
@@ -393,6 +395,51 @@ static void RBACDDLExecute(ClientContext &context, TableFunctionInput &data, Dat
 			throw InvalidInputException("Table '%s.%s' does not exist", bind_data.schema_name, bind_data.table_name);
 		}
 
+		// Get table columns for expression validation
+		sql = StringUtil::Format(
+		    "SELECT column_name FROM information_schema.columns WHERE table_schema = '%s' AND table_name = '%s'",
+		    StringUtil::Replace(bind_data.schema_name, "'", "''"),
+		    StringUtil::Replace(bind_data.table_name, "'", "''"));
+		auto cols_result = ExecuteSQL(context, sql);
+		unordered_set<string> table_columns;
+		if (!cols_result->HasError()) {
+			for (auto &row : *cols_result) {
+				table_columns.insert(StringUtil::Lower(row.GetValue<string>(0)));
+			}
+		}
+
+		// Validate filter expression (Q79: fail fast if column doesn't exist)
+		// Try to parse the expression to extract column references
+		try {
+			auto expressions = Parser::ParseExpressionList(bind_data.filter_expression);
+			if (expressions.empty()) {
+				throw InvalidInputException("Invalid filter expression");
+			}
+			// Check column references in the expression
+			std::function<void(ParsedExpression &)> validate_columns;
+			validate_columns = [&](ParsedExpression &expr) {
+				if (expr.GetExpressionClass() == ExpressionClass::COLUMN_REF) {
+					auto &col_ref = expr.Cast<ColumnRefExpression>();
+					string col_name;
+					if (!col_ref.column_names.empty()) {
+						col_name = StringUtil::Lower(col_ref.column_names.back());
+					}
+					if (!col_name.empty() && table_columns.find(col_name) == table_columns.end()) {
+						throw InvalidInputException("Column '%s' does not exist in table '%s.%s'",
+						                            col_ref.column_names.back(),
+						                            bind_data.schema_name, bind_data.table_name);
+					}
+				}
+				// Recurse into children
+				ParsedExpressionIterator::EnumerateChildren(expr, [&](ParsedExpression &child) {
+					validate_columns(child);
+				});
+			};
+			validate_columns(*expressions[0]);
+		} catch (const ParserException &e) {
+			throw InvalidInputException("Invalid filter expression: %s", e.what());
+		}
+
 		// Check policy doesn't already exist
 		sql = StringUtil::Format(
 		    "SELECT 1 FROM duckdb_row_policies WHERE policy_name = '%s' AND table_schema = '%s' AND table_name = '%s'",
@@ -423,6 +470,18 @@ static void RBACDDLExecute(ClientContext &context, TableFunctionInput &data, Dat
 	}
 
 	case RBACStatementType::DROP_ROW_POLICY: {
+		// Check policy exists first
+		sql = StringUtil::Format(
+		    "SELECT 1 FROM duckdb_row_policies WHERE policy_name = '%s' AND table_schema = '%s' AND table_name = '%s'",
+		    StringUtil::Replace(bind_data.policy_name, "'", "''"),
+		    StringUtil::Replace(bind_data.schema_name, "'", "''"),
+		    StringUtil::Replace(bind_data.table_name, "'", "''"));
+		auto policy_check = ExecuteSQL(context, sql);
+		if (policy_check->HasError() || !HasRows(*policy_check)) {
+			throw InvalidInputException("Row policy '%s' does not exist on table '%s'",
+			                            bind_data.policy_name, bind_data.table_name);
+		}
+
 		sql = StringUtil::Format(
 		    "DELETE FROM duckdb_row_policies WHERE policy_name = '%s' AND table_schema = '%s' AND table_name = '%s'",
 		    StringUtil::Replace(bind_data.policy_name, "'", "''"),

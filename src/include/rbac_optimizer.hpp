@@ -38,7 +38,13 @@ private:
 	                                   LogicalGet &get, const vector<string> &effective_roles, const string &user_name);
 
 	//! Inject a LogicalFilter with parsed expression string (for row policies)
-	static void InjectParsedFilter(unique_ptr<LogicalOperator> &op_ptr, LogicalGet &get, const string &filter_expr);
+	static void InjectParsedFilter(unique_ptr<LogicalOperator> &op_ptr, LogicalGet &get, const string &filter_expr,
+	                               const string &current_user);
+
+	//! Look up and inject row policies for a table
+	static void InjectRowPolicies(ClientContext &context, unique_ptr<LogicalOperator> &op_ptr, LogicalGet &get,
+	                              const string &schema_name, const string &table_name,
+	                              const vector<string> &effective_roles, const string &user_name);
 
 	// ===== Spike code (kept for backward compatibility during transition) =====
 	//! Legacy: Walk without context (for spike tests)
