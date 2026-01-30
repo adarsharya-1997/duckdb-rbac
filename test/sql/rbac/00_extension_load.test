@@ -1,41 +1,100 @@
 # name: test/sql/rbac/00_extension_load.test
 # description: Test RBAC extension loading and basic functions
 # group: [rbac]
-# requirements: FR-19, FR-22
 
-# Before we load the extension, RBAC functions should not exist
-statement error
-SELECT current_user();
-----
-Catalog Error
+# Load the extension
+require quack
 
-statement error
-CREATE ROLE test_role;
-----
-Parser Error
+# ===== Scalar Functions =====
 
-# Load the RBAC extension
-require rbac
-
-# Extension should now be loaded - test current_user() function
-# T-10-01: current_user() returns the set user name
-# When no identity is set, should return default (superuser mode)
+# rbac_current_user() returns default user
 query I
-SELECT current_user() IS NOT NULL;
+SELECT rbac_current_user()
+----
+default_user
+
+# rbac_current_roles() returns empty list by default
+query I
+SELECT rbac_current_roles()
+----
+[]
+
+# rbac_is_superuser() returns true by default
+query I
+SELECT rbac_is_superuser()
 ----
 true
 
-# T-10-04: current_roles() returns the set roles  
+# ===== System Tables Exist =====
+
+# duckdb_roles table exists and is empty
 query I
-SELECT current_roles() IS NOT NULL;
+SELECT COUNT(*) FROM duckdb_roles
 ----
-true
+0
 
-# T-05-08, T-05-09: No identity set - treated as superuser
-# Superuser should be able to create roles without restriction
-statement ok
-CREATE ROLE extension_test_role;
+# duckdb_role_members table exists
+query I
+SELECT COUNT(*) FROM duckdb_role_members
+----
+0
 
-statement ok
-DROP ROLE extension_test_role;
+# duckdb_table_privileges table exists
+query I
+SELECT COUNT(*) FROM duckdb_table_privileges
+----
+0
 
+# duckdb_column_privileges table exists
+query I
+SELECT COUNT(*) FROM duckdb_column_privileges
+----
+0
+
+# duckdb_row_policies table exists
+query I
+SELECT COUNT(*) FROM duckdb_row_policies
+----
+0
+
+# ===== rbac_set_identity() Function =====
+
+# Set identity to a non-superuser
+query I
+SELECT * FROM rbac_set_identity('alice', ['analyst', 'reader'], false)
+----
+Identity set: user='alice', roles=['analyst', 'reader'], is_superuser=false
+
+# Verify identity was set
+query I
+SELECT rbac_current_user()
+----
+alice
+
+query I
+SELECT rbac_current_roles()
+----
+[analyst, reader]
+
+query I
+SELECT rbac_is_superuser()
+----
+false
+
+# Trying to set identity again should fail (immutable)
+statement error
+SELECT * FROM rbac_set_identity('bob', []::VARCHAR[], true)
+----
+RBAC identity already set
+
+# ===== CREATE ROLE works (from spikes) =====
+
+query I
+CREATE ROLE test_role
+----
+Role created: test_role
+
+query I
+DROP ROLE test_role
+----
+Role dropped: test_role

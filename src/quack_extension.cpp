@@ -16,7 +16,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	auto &callback_manager = ExtensionCallbackManager::Get(db);
 	callback_manager.Register(make_shared_ptr<RBACExtensionCallback>());
 
-	// Register RBAC scalar functions (rbac_current_user, rbac_current_roles, rbac_is_superuser)
+	// Register RBAC scalar functions (rbac_current_user, rbac_current_roles, rbac_is_superuser, rbac_set_identity)
 	RegisterRBACScalarFunctions(loader);
 
 	// Register RBAC optimizer extension (permission checks, row policy injection)
@@ -24,6 +24,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Register RBAC parser extension (intercepts CREATE ROLE, GRANT, etc.)
 	RegisterRBACParser(loader);
+
+	// Create RBAC system tables (duckdb_roles, duckdb_table_privileges, etc.)
+	CreateRBACSystemTables(db);
 }
 
 void QuackExtension::Load(ExtensionLoader &loader) {

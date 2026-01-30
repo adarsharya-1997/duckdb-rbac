@@ -38,4 +38,7 @@ public:
 //! Register RBAC scalar functions (rbac_current_user, etc.)
 void RegisterRBACScalarFunctions(ExtensionLoader &loader);
 
+//! Create RBAC system tables (duckdb_roles, duckdb_table_privileges, etc.)
+void CreateRBACSystemTables(DatabaseInstance &db);
+
 } // namespace duckdb

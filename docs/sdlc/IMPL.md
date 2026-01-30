@@ -21,6 +21,7 @@ This document tracks the implementation of the RBAC extension. Each phase has:
 - `LLD.md` - Technical design (Section 2 for architecture)
 - `TEST.md` - Test specification
 - `RFC.md` - DuckDB extension approach
+- `SPIKE.md` - Spike testing results and API findings
 
 ---
 
@@ -29,7 +30,7 @@ This document tracks the implementation of the RBAC extension. Each phase has:
 | Phase | Status | Tests Passing |
 |-------|--------|---------------|
 | Phase 0: Spikes | ✅ Complete | 6/6 |
-| Phase 1: Foundation | ⬜ Not Started | 0/6 |
+| Phase 1: Foundation | ✅ Complete | 15 assertions |
 | Phase 2: DDL Parsing | ⬜ Not Started | 0/31 |
 | Phase 3: Storage & Grants | ⬜ Not Started | 0/20 |
 | Phase 4: Enforcement | ⬜ Not Started | 0/15 |
@@ -40,348 +41,49 @@ This document tracks the implementation of the RBAC extension. Each phase has:
 
 ---
 
-## Phase 0: Validation Spikes
-
-**Goal:** Prove DuckDB extension hooks work as expected before committing to implementation.
-
-**Duration:** 1 day  
-**Dependencies:** None
-
-### Recommended Execution Order
-
-Execute spikes in this order (each builds on the previous):
-
-1. **Spike 0.4** (ClientContextState) → easiest, no parser/optimizer hooks yet ✅
-2. **Spike 0.2** (OptimizerExtension throws) → introduces optimizer hook ✅
-3. **Spike 0.3** (OptimizerExtension injects filter) → extends optimizer work ✅
-4. **Spike 0.1** (ParserExtension catches DDL) → separate subsystem ✅
-5. **Spike 0.5** (Expression binding) → hardest, builds on 0.3 ✅
-6. **Spike 0.6** (SELECT * column filtering) → determines column-level approach ✅
-
-### File Organization
-
-Create spike code in `src/` (refactor to proper structure in Phase 1):
-
-```
-src/
-├── include/
-│   ├── quack_extension.hpp      # existing
-│   └── rbac_state.hpp           # NEW: Spike 0.4 - session state
-├── quack_extension.cpp          # existing - modify to register hooks
-├── rbac_state.cpp               # NEW: Spike 0.4 implementation
-├── rbac_optimizer.cpp           # NEW: Spikes 0.2, 0.3, 0.5
-└── rbac_parser.cpp              # NEW: Spike 0.1
-```
-
-### Test Commands
-
-```bash
-# Build after changes
-just build
-
-# Run spike tests (create test/sql/rbac/00_spikes.test)
-./build/debug/test/unittest "test/sql/rbac/00_spikes.test"
-
-# Interactive testing (useful for debugging)
-just run
-# Then in DuckDB shell:
-#   LOAD 'quack';
-#   <run test queries>
-```
-
-### Tasks
-
----
-
-#### Spike 0.4: ClientContextState stores identity
-
-**Implementation:**
-1. Create `RBACState : ClientContextState` with `user_name`, `roles`, `is_superuser`
-2. Create `RBACExtensionCallback : ExtensionCallback` with `OnConnectionOpened`
-3. In `LoadInternal()`, register callback via `DBConfig::GetConfig(db).extension_callbacks.push_back(...)`
-4. Create scalar function `rbac_current_user()` that retrieves state from `context.registered_state->Get<RBACState>("rbac")`
-
-**Test SQL:**
-```sql
-LOAD 'quack';
-SELECT rbac_current_user();  
--- Expected: 'default_user' or hardcoded value
-```
-
-**Note (why this matters):** DuckDB provides `ClientContext::registered_state` (`RegisteredStateManager`) and connection lifecycle callbacks (`ExtensionCallback::OnConnectionOpened/Closed`) that we can use to ensure state exists per connection.
-
-- [x] Spike 0.4 complete
-
----
-
-#### Spike 0.2: OptimizerExtension can throw exception
-
-**Implementation:**
-1. Create `RBACOptimizerExtension` with `pre_optimize_function` set
-2. Walk plan looking for `LogicalGet` nodes (use `LogicalOperatorType::LOGICAL_GET`)
-3. If table name == "blocked", throw `PermissionException("Access denied to table 'blocked'")`
-4. Register via `DBConfig::GetConfig(db).optimizer_extensions.push_back(...)`
-
-**Test SQL:**
-```sql
-LOAD 'quack';
-CREATE TABLE allowed (id INT);
-CREATE TABLE blocked (id INT);
-SELECT * FROM allowed;   -- Should succeed
-SELECT * FROM blocked;   -- Should fail with "Access denied to table 'blocked'"
-```
-
-**Note (why this matters):** `pre_optimize_function` is confirmed to run before built-in optimizers and can throw; we'll use this mechanism for permission enforcement failures.
-
-- [x] Spike 0.2 complete
-
----
-
-#### Spike 0.3: OptimizerExtension can inject LogicalFilter
-
-**Implementation:**
-1. Extend optimizer hook from Spike 0.2
-2. When finding `LogicalGet` on table named "filtered_table":
-   - Create a hardcoded `BoundComparisonExpression` for `id > 0`
-   - Create `LogicalFilter` with that expression
-   - Insert filter between `LogicalGet` and its parent (rewire child pointers)
-
-**Test SQL:**
-```sql
-LOAD 'quack';
-CREATE TABLE filtered_table (id INT);
-INSERT INTO filtered_table VALUES (-1), (0), (1), (2);
-SELECT * FROM filtered_table;
--- Expected: only rows where id > 0, i.e., (1), (2)
-```
-
-**Note (why this matters):** `LogicalFilter` exists and plan mutation is supported; we'll reuse this for row policies, but binding a correct filter expression is the hard part (see Spike 0.5).
-
-- [x] Spike 0.3 complete
-
----
-
-#### Spike 0.1: ParserExtension catches custom DDL
-
-**Implementation:**
-1. Create parse function that checks if query starts with `CREATE ROLE` (case-insensitive)
-2. Extract role name, return `ParserExtensionParseData` subclass with it
-3. Create plan function that returns a `TableFunction` which prints/returns "Role created: <name>"
-4. Register via `DBConfig::GetConfig(db).parser_extensions.push_back(...)`
-
-**Test SQL:**
-```sql
-LOAD 'quack';
-CREATE ROLE test_role;
--- Expected: returns result like "Role created: test_role"
--- (DuckDB's native parser doesn't recognize CREATE ROLE, so our extension catches it)
-```
-
-**Note (why this matters):** In DuckDB, `ParserExtension::parse_function` is only invoked for statements DuckDB fails to parse, so this spike confirms interception works for RBAC DDL and clarifies the compatibility risk if DuckDB adds native ROLE/GRANT syntax later.
-
-**Spike finding:** DuckDB's parser partially recognizes some RBAC keywords (e.g., "DROP ROLE;") and fails mid-parse with its own syntax error *before* our extension is called. Our extension only catches statements that DuckDB completely fails to recognize. This means some malformed RBAC DDL may show DuckDB errors instead of our custom errors. For production, consider using `parser_override` if full control over error messages is needed.
-
-- [x] Spike 0.1 complete
-
----
-
-#### Spike 0.5: Bind a policy expression against a table scan
-
-**Implementation:**
-1. Parse expression string using `Parser::ParseExpressionList("id > 0")`
-2. In optimizer hook, find base-table `LogicalGet` (where `GetTable() != nullptr`)
-3. Use `input.optimizer.binder` to create expression binder
-4. Bind parsed expression against `LogicalGet`'s column bindings
-5. Inject bound expression via `LogicalFilter`
-
-**Test SQL:**
-```sql
-LOAD 'quack';
-CREATE TABLE policy_test (id INT, name VARCHAR);
-INSERT INTO policy_test VALUES (1, 'visible'), (0, 'hidden'), (2, 'also_visible');
-SELECT * FROM policy_test;
--- Expected: only rows where id > 0, i.e., (1, 'visible'), (2, 'also_visible')
--- This proves we can dynamically bind and inject policy expressions
-```
-
-**Note (why this matters):** Row policy parsing is easy, but *binding* to correct `ColumnBinding`/scope during optimizer-time rewriting is the highest-risk integration point; we want this proven early.
-
-- [x] Spike 0.5 complete
-
----
-
-#### Spike 0.6: SELECT * Column-Level Permission Feasibility
-
-**Goal:** Determine if column-level permissions can work with `SELECT *` without core DuckDB changes.
-
-**Background (from RFC.md):**
-DuckDB expands `SELECT *` to an explicit column list during binding, **before** the optimizer extension runs. This means:
-```sql
--- Table: orders (id, customer, amount, secret_notes)
-SELECT * FROM orders;
--- After binding: SELECT id, customer, amount, secret_notes FROM orders
--- Optimizer hook sees all 4 columns, can't tell it was SELECT *
-```
-
-**Three approaches to test:**
-
-**Part A: Confirm optimizer sees expanded columns**
-1. Create table with columns `(a, b, c_secret)`
-2. In optimizer hook, log `LogicalGet::column_ids` for the table
-3. Run `SELECT *` and `SELECT a, b` - verify optimizer sees different column sets
-4. **Expected:** Optimizer sees all columns for `SELECT *`, only requested for explicit list
-
-**Part B: Test column filtering in optimizer**
-1. When seeing `LogicalGet` for test table, try to remove `c_secret` from `column_ids`
-2. See if query still executes and only returns allowed columns
-3. **Expected:** Likely fails - removing columns may break downstream operators
-
-**Part C: Test `parser_override` for query rewriting**
-1. Implement `parser_override_function_t` that intercepts all SQL
-2. Detect `SELECT *` on specific table, rewrite to explicit allowed columns
-3. Return modified statement
-4. **Expected:** Works but requires re-parsing rewritten SQL
-
-**Implementation:**
-
-```cpp
-// Part A & B: In rbac_optimizer.cpp
-void WalkPlanWithParent(unique_ptr<LogicalOperator> &op_ptr) {
-    if (op_ptr->type == LogicalOperatorType::LOGICAL_GET) {
-        auto &get = op_ptr->Cast<LogicalGet>();
-        auto *table = get.GetTable();
-        if (table && table->name == "col_test") {
-            // Part A: Log what columns optimizer sees
-            fprintf(stderr, "col_test scan sees %zu columns: ", get.GetColumnIds().size());
-            for (auto &col_id : get.GetColumnIds()) {
-                fprintf(stderr, "%s ", get.names[col_id.GetPrimaryIndex()].c_str());
-            }
-            fprintf(stderr, "\n");
-            
-            // Part B: Try to filter out 'c_secret' column
-            // (test if modifying column_ids breaks execution)
-        }
-    }
-    // ... recurse
-}
-
-// Part C: In rbac_parser.cpp - add parser_override
-ParserOverrideResult ParserOverride(ParserExtensionInfo *info, const string &query) {
-    // Detect "SELECT * FROM col_test" and rewrite to "SELECT a, b FROM col_test"
-    // Return ParserExtensionResultType::PARSE_SUCCESSFUL with new statements
-    // or ParserExtensionResultType::DISPLAY_ORIGINAL_ERROR to fall through
-}
-```
-
-**Test SQL:**
-```sql
-LOAD 'quack';
-SET allow_parser_override_extension = 'strict_when_supported';
-
-CREATE TABLE col_test (a INT, b INT, c_secret INT);
-INSERT INTO col_test VALUES (1, 2, 999), (10, 20, 888);
-
--- Part A: Verify expansion
-SELECT * FROM col_test;       -- Optimizer should see a, b, c_secret
-SELECT a, b FROM col_test;    -- Optimizer should see a, b only
-
--- Part B: Test column filtering (if implemented)
--- Expected: Either works (returns a, b only) or errors
-
--- Part C: Test parser_override rewrite
--- If working, SELECT * should transparently become SELECT a, b
-SELECT * FROM col_test;
--- Expected: returns only a, b columns if parser_override works
-```
-
-**Success Criteria:**
-- [x] Part A confirms optimizer sees all columns for SELECT *
-- [x] Part B determines if column_ids can be narrowed (**NO - causes binding errors**)
-- [x] Part C determines if parser_override is viable for SELECT * rewriting (**YES!**)
-
-**Findings:**
-- **Part A:** Optimizer sees `[a, b, c_secret]` for `SELECT *`, only `[a, b]` for explicit columns
-- **Part B:** Removing columns from `column_ids` fails with "Failed to bind column reference" - downstream operators still reference removed columns
-- **Part C:** `parser_override` with `fallback` mode successfully rewrites `SELECT *` to explicit column list before binding
-
-**Decision:** Use `parser_override` approach (Option A from RFC) for column-level permissions with `SELECT *`
-
-- [x] Spike 0.6 complete
-
----
-
-### Spike Test File
-
-Create `test/sql/rbac/00_spikes.test`:
-
-```sql
-# name: test/sql/rbac/00_spikes.test
-# description: Validation spikes for RBAC extension hooks
-# group: [rbac]
-
-require quack
-
-# Spike 0.4: Session state
-query I
-SELECT rbac_current_user()
-----
-default_user
-
-# Spike 0.2: Optimizer throws on blocked table
-statement ok
-CREATE TABLE allowed (id INT)
-
-statement ok
-CREATE TABLE blocked (id INT)
-
-statement ok
-SELECT * FROM allowed
-
-statement error
-SELECT * FROM blocked
-----
-Access denied
-
-# Spike 0.3: Filter injection
-statement ok
-CREATE TABLE filtered_table (id INT)
-
-statement ok
-INSERT INTO filtered_table VALUES (-1), (0), (1), (2)
-
-query I
-SELECT * FROM filtered_table ORDER BY id
-----
-1
-2
-
-# Spike 0.1: Parser catches CREATE ROLE
-query I
-CREATE ROLE test_role
-----
-Role created: test_role
-
-# Spike 0.5: Expression binding (uses policy_test table)
-statement ok
-CREATE TABLE policy_test (id INT, name VARCHAR)
-
-statement ok
-INSERT INTO policy_test VALUES (1, 'visible'), (0, 'hidden'), (2, 'also_visible')
-
-query IT
-SELECT * FROM policy_test ORDER BY id
-----
-1	visible
-2	also_visible
-```
-
-### Acceptance Criteria
-
-- [x] All 6 spikes demonstrate expected behavior
-- [x] `test/sql/rbac/00_spikes.test` passes (54 assertions)
-- [x] Document any surprises or limitations discovered (see `docs/sdlc/SPIKE.md`)
-- [x] Decision: **Proceed with implementation** (core RBAC)
-- [x] Spike 0.6: Use `parser_override` for column-level SELECT * rewriting
+## Phase 0: Validation Spikes ✅
+
+**Status:** Complete  
+**Test File:** `test/sql/rbac/00_spikes.test` (54 assertions)  
+**Details:** See `docs/sdlc/SPIKE.md`
+
+All 6 spikes passed, confirming that DuckDB's extension API supports our RBAC implementation:
+
+| Spike | What We Proved |
+|-------|----------------|
+| 0.1 | `ParserExtension` catches custom DDL (CREATE ROLE, GRANT, etc.) |
+| 0.2 | `OptimizerExtension` can throw `PermissionException` |
+| 0.3 | `OptimizerExtension` can inject `LogicalFilter` for row policies |
+| 0.4 | `ClientContextState` stores per-connection identity |
+| 0.5 | Custom expression binder works for row policy filters |
+| 0.6 | `parser_override` enables column-level `SELECT *` rewriting |
+
+**Key Decisions from Spikes:**
+- Use `ExtensionCallbackManager::Get(db).Register()` for hook registration
+- Use custom `SimpleExpressionBinder` for row policy expression binding
+- Use `parser_override` with `fallback` mode for column-level SELECT * handling
+- `LogicalGet::GetTable()` can return nullptr - must handle gracefully
+
+### Spike Code Cleanup Strategy
+
+Spike code contains hardcoded test logic that must be replaced with real implementations as we progress. Clean up incrementally, phase by phase:
+
+| Phase | Spike Code to Replace | Action |
+|-------|----------------------|--------|
+| **Phase 2** | CREATE ROLE / DROP ROLE stubs | Replace with real `INSERT INTO duckdb_roles` |
+| **Phase 4** | "blocked" table hardcoded check | Replace with permission lookup from `duckdb_table_privileges` |
+| **Phase 5** | "filtered_table", "policy_test" hardcoded filters | Replace with policy lookup from `duckdb_row_policies` |
+| **Phase 6** | "col_test_*" parser_override logic | Replace with proper column-level enforcement |
+
+**Spike Test File (`00_spikes.test`):**
+- Keep passing until replaced by real tests
+- Archive/retire once all features are tested in proper test files (`01_roles.test`, etc.)
+
+**Approach:**
+1. Implement real feature
+2. Update tests to use real grants/policies
+3. Remove corresponding spike hardcoded logic
+4. Verify spike tests still pass (until retired)
 
 ---
 
@@ -396,48 +98,31 @@ SELECT * FROM policy_test ORDER BY id
 ### Tasks
 
 #### 1.1 Extension Entry Point
-- [ ] Create extension entry point (`DUCKDB_CPP_EXTENSION_ENTRY`)
-- [ ] Extension loads without error via `LOAD 'rbac'` or `require rbac`
-- [ ] Register extension in DuckDB's extension system
+- [x] Create extension entry point (`DUCKDB_CPP_EXTENSION_ENTRY`) *(done in spikes)*
+- [x] Extension loads without error via `LOAD 'quack'` or `require quack` *(done in spikes)*
+- [x] Register extension in DuckDB's extension system *(done in spikes)*
 
 #### 1.2 Session State Management
-- [ ] Implement `RBACState : ClientContextState`
-  ```cpp
-  struct RBACState : ClientContextState {
-      string user_name;
-      vector<string> roles;
-      bool is_superuser = true;  // Default to superuser for backwards compat
-      bool initialized = false;
-  };
-  ```
-- [ ] Register `ExtensionCallback` for connection lifecycle
-- [ ] Install `RBACState` in `ClientContext::registered_state` on connection open
-- [ ] Implement mechanism to set identity (connection properties or init function)
+- [x] Implement `RBACState : ClientContextState` *(done in spikes)*
+- [x] Register `ExtensionCallback` for connection lifecycle *(done in spikes)*
+- [x] Install `RBACState` in `ClientContext::registered_state` on connection open *(done in spikes)*
+- [x] Implement `rbac_set_identity(user, roles, is_superuser)` function
 
 #### 1.3 Scalar Functions
-- [ ] Register `current_user()` ScalarFunction
-  - Returns `RBACState.user_name`
-  - Returns default value if not initialized
-- [ ] Register `current_roles()` ScalarFunction
-  - Returns `RBACState.roles` as LIST
+- [x] Register `rbac_current_user()` ScalarFunction *(done in spikes)*
+- [x] Register `rbac_current_roles()` ScalarFunction *(done in spikes)*
+- [x] Register `rbac_is_superuser()` ScalarFunction *(done in spikes)*
 
 #### 1.4 System Tables (Schema)
-- [ ] Create `duckdb_roles` table on extension load
-  ```sql
-  CREATE TABLE IF NOT EXISTS duckdb_roles (
-      role_name VARCHAR PRIMARY KEY,
-      created_at TIMESTAMP DEFAULT current_timestamp,
-      description VARCHAR
-  );
-  ```
-- [ ] Create `duckdb_role_members` table
-- [ ] Create `duckdb_table_privileges` table
-- [ ] Create `duckdb_column_privileges` table
-- [ ] Create `duckdb_row_policies` table
+- [x] Create `duckdb_roles` table on extension load
+- [x] Create `duckdb_role_members` table
+- [x] Create `duckdb_table_privileges` table
+- [x] Create `duckdb_column_privileges` table
+- [x] Create `duckdb_row_policies` table
 
-#### 1.5 Register Extension Hooks (Empty)
-- [ ] Register `OptimizerExtension` (empty implementation for now)
-- [ ] Register `ParserExtension` (empty implementation for now)
+#### 1.5 Register Extension Hooks
+- [x] Register `OptimizerExtension` *(done in spikes - has spike test logic)*
+- [x] Register `ParserExtension` *(done in spikes - has spike test logic)*
 
 ### Acceptance Criteria
 
@@ -445,11 +130,12 @@ SELECT * FROM policy_test ORDER BY id
 test/sql/rbac/00_extension_load.test - ALL PASS
 ```
 
-- [ ] Extension loads successfully
-- [ ] `current_user()` returns a value
-- [ ] `current_roles()` returns a value  
-- [ ] System tables exist and are queryable
-- [ ] Default session is superuser (can do anything)
+- [x] Extension loads successfully
+- [x] `rbac_current_user()` returns a value
+- [x] `rbac_current_roles()` returns a value  
+- [x] System tables exist and are queryable
+- [x] Default session is superuser (can do anything)
+- [x] `rbac_set_identity()` can change session identity (once only, immutable)
 
 ---
 
