@@ -156,7 +156,7 @@ SELECT * FROM filtered_table;
 
 **Note (why this matters):** `LogicalFilter` exists and plan mutation is supported; we'll reuse this for row policies, but binding a correct filter expression is the hard part (see Spike 0.5).
 
-- [ ] Spike 0.3 complete
+- [x] Spike 0.3 complete
 
 ---
 
@@ -178,7 +178,9 @@ CREATE ROLE test_role;
 
 **Note (why this matters):** In DuckDB, `ParserExtension::parse_function` is only invoked for statements DuckDB fails to parse, so this spike confirms interception works for RBAC DDL and clarifies the compatibility risk if DuckDB adds native ROLE/GRANT syntax later.
 
-- [ ] Spike 0.1 complete
+**Spike finding:** DuckDB's parser partially recognizes some RBAC keywords (e.g., "DROP ROLE;") and fails mid-parse with its own syntax error *before* our extension is called. Our extension only catches statements that DuckDB completely fails to recognize. This means some malformed RBAC DDL may show DuckDB errors instead of our custom errors. For production, consider using `parser_override` if full control over error messages is needed.
+
+- [x] Spike 0.1 complete
 
 ---
 

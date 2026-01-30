@@ -3,6 +3,7 @@
 #include "quack_extension.hpp"
 #include "rbac_state.hpp"
 #include "rbac_optimizer.hpp"
+#include "rbac_parser.hpp"
 #include "duckdb.hpp"
 #include "duckdb/main/extension_callback_manager.hpp"
 
@@ -20,6 +21,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Register RBAC optimizer extension (permission checks, row policy injection)
 	RegisterRBACOptimizer(loader);
+
+	// Register RBAC parser extension (intercepts CREATE ROLE, GRANT, etc.)
+	RegisterRBACParser(loader);
 }
 
 void QuackExtension::Load(ExtensionLoader &loader) {

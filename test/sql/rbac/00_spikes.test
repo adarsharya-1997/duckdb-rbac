@@ -72,3 +72,17 @@ SELECT * FROM filtered_table ORDER BY id
 ----
 1
 2
+
+# ===== Spike 0.1: Parser catches CREATE ROLE =====
+
+# CREATE ROLE should be intercepted by our parser extension
+query I
+CREATE ROLE test_role
+----
+Role created: test_role
+
+# DROP ROLE should also work
+query I
+DROP ROLE test_role
+----
+Role dropped: test_role

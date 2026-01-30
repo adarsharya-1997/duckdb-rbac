@@ -13,6 +13,7 @@ set(EXTENSION_SOURCES
     src/quack_extension.cpp
     src/rbac_state.cpp
     src/rbac_optimizer.cpp
+    src/rbac_parser.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
