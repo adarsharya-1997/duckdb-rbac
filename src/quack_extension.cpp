@@ -1,45 +1,27 @@
 #define DUCKDB_EXTENSION_MAIN
 
 #include "quack_extension.hpp"
+#include "rbac_state.hpp"
 #include "duckdb.hpp"
-#include "duckdb/common/exception.hpp"
-#include "duckdb/function/scalar_function.hpp"
-#include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
-
-// OpenSSL linked through vcpkg
-#include <openssl/opensslv.h>
+#include "duckdb/main/extension_callback_manager.hpp"
 
 namespace duckdb {
 
-inline void QuackScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &name_vector = args.data[0];
-	UnaryExecutor::Execute<string_t, string_t>(name_vector, result, args.size(), [&](string_t name) {
-		return StringVector::AddString(result, "Quack " + name.GetString() + " 🐥");
-	});
-}
-
-inline void QuackOpenSSLVersionScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &name_vector = args.data[0];
-	UnaryExecutor::Execute<string_t, string_t>(name_vector, result, args.size(), [&](string_t name) {
-		return StringVector::AddString(result, "Quack " + name.GetString() + ", my linked OpenSSL version is " +
-		                                           OPENSSL_VERSION_TEXT);
-	});
-}
-
 static void LoadInternal(ExtensionLoader &loader) {
-	// Register a scalar function
-	auto quack_scalar_function = ScalarFunction("quack", {LogicalType::VARCHAR}, LogicalType::VARCHAR, QuackScalarFun);
-	loader.RegisterFunction(quack_scalar_function);
+	auto &db = loader.GetDatabaseInstance();
 
-	// Register another scalar function
-	auto quack_openssl_version_scalar_function = ScalarFunction("quack_openssl_version", {LogicalType::VARCHAR},
-	                                                            LogicalType::VARCHAR, QuackOpenSSLVersionScalarFun);
-	loader.RegisterFunction(quack_openssl_version_scalar_function);
+	// Register extension callback for connection lifecycle (ensures RBACState exists)
+	auto &callback_manager = ExtensionCallbackManager::Get(db);
+	callback_manager.Register(make_shared_ptr<RBACExtensionCallback>());
+
+	// Register RBAC scalar functions (rbac_current_user, rbac_current_roles, rbac_is_superuser)
+	RegisterRBACScalarFunctions(loader);
 }
 
 void QuackExtension::Load(ExtensionLoader &loader) {
 	LoadInternal(loader);
 }
+
 std::string QuackExtension::Name() {
 	return "quack";
 }

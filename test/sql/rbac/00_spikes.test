@@ -1,0 +1,25 @@
+# name: test/sql/rbac/00_spikes.test
+# description: Validation spikes for RBAC extension hooks
+# group: [rbac]
+
+require quack
+
+# ===== Spike 0.4: Session state =====
+
+# Test rbac_current_user() returns default value
+query I
+SELECT rbac_current_user()
+----
+default_user
+
+# Test rbac_is_superuser() returns true by default
+query I
+SELECT rbac_is_superuser()
+----
+true
+
+# Test rbac_current_roles() returns empty list by default
+query I
+SELECT rbac_current_roles()
+----
+[]

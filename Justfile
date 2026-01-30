@@ -21,8 +21,11 @@ clean:
     make clean
 
 # Build debug with Ninja
-build:
+config:
     GEN=ninja make debug
+
+build:
+    cmake --build build/debug --config Debug
 
 # Run duckdb
 run:
@@ -31,6 +34,9 @@ run:
 # Run tests on debug build
 test:
     ./build/debug/test/unittest "test/sql/quack.test"
+
+spike:
+    ./build/debug/test/unittest "test/sql/rbac/00_spikes.test"
 
 # Update submodules to latest
 update:

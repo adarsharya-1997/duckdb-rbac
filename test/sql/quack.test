@@ -1,23 +1,18 @@
 # name: test/sql/quack.test
-# description: test quack extension
+# description: test quack extension loads correctly
 # group: [sql]
 
-# Before we load the extension, this will fail
+# Before we load the extension, RBAC functions won't exist
 statement error
-SELECT quack('Sam');
+SELECT rbac_current_user();
 ----
-Catalog Error: Scalar Function with name quack does not exist!
+Catalog Error: Scalar Function with name rbac_current_user does not exist!
 
 # Require statement will ensure this test is run with this extension loaded
 require quack
 
-# Confirm the extension works
+# Confirm the extension works - RBAC functions should be available
 query I
-SELECT quack('Sam');
+SELECT rbac_current_user();
 ----
-Quack Sam 🐥
-
-query I
-SELECT quack_openssl_version('Michael') ILIKE 'Quack Michael, my linked OpenSSL version is OpenSSL%';
-----
-true
+default_user
