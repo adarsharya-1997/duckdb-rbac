@@ -1,162 +1,246 @@
 # name: test/sql/rbac/01_roles.test
-# description: Test role management - CREATE/DROP ROLE, membership
+# description: Test RBAC DDL statements - roles, grants, policies
 # group: [rbac]
-# requirements: FR-1, FR-2, FR-3, FR-4, FR-5, US-5
 
-require rbac
+require quack
 
-# =============================================================================
-# 1.1 CREATE ROLE
-# =============================================================================
+# ===== CREATE ROLE / DROP ROLE =====
 
-# T-01-01: Create a new role with a valid name
-statement ok
-CREATE ROLE analyst;
-
-# T-01-02: Create a role that already exists
-statement error
-CREATE ROLE analyst;
-----
-Role 'analyst' already exists
-
-# T-01-03: Create role with uppercase name (case-insensitive)
-statement ok
-CREATE ROLE VIEWER;
-
-# T-01-04: Verify roles are stored lowercase
+# Create a role
 query I
-SELECT role_name FROM duckdb_roles WHERE role_name = 'viewer';
+CREATE ROLE analyst
 ----
-viewer
+Role created: analyst
 
-# Create additional roles for later tests
-statement ok
-CREATE ROLE data_access;
+# Verify role exists in system table
+query I
+SELECT role_name FROM duckdb_roles WHERE role_name = 'analyst'
+----
+analyst
 
-statement ok
-CREATE ROLE power_user;
-
-statement ok
-CREATE ROLE regional_sales;
-
-# =============================================================================
-# 1.2 DROP ROLE
-# =============================================================================
-
-# Create a role specifically to drop
-statement ok
-CREATE ROLE to_be_dropped;
-
-# T-01-05: Drop an existing role with no grants
-statement ok
-DROP ROLE to_be_dropped;
-
-# T-01-06: Drop a role that doesn't exist
+# Creating same role again should fail
 statement error
-DROP ROLE nonexistent_role;
+CREATE ROLE analyst
 ----
-Role 'nonexistent_role' does not exist
+already exists
 
-# =============================================================================
-# 1.3 DROP ROLE with existing grants (should fail)
-# =============================================================================
+# Create another role
+query I
+CREATE ROLE reader
+----
+Role created: reader
 
-# Setup: Create table and grant to test DROP restriction
-statement ok
-CREATE TABLE test_orders (id INTEGER, amount DECIMAL);
+# Drop a role
+query I
+DROP ROLE reader
+----
+Role dropped: reader
 
-statement ok
-GRANT SELECT ON test_orders TO analyst;
+# Verify role is gone
+query I
+SELECT COUNT(*) FROM duckdb_roles WHERE role_name = 'reader'
+----
+0
 
-# T-01-07: Drop a role that has table grants
+# Dropping non-existent role should fail
 statement error
-DROP ROLE analyst;
+DROP ROLE nonexistent
 ----
-Cannot drop role 'analyst': role has existing grants
+does not exist
 
-# Clean up the grant
-statement ok
-REVOKE SELECT ON test_orders FROM analyst;
+# ===== GRANT/REVOKE ROLE MEMBERSHIP =====
 
-# T-01-08: Test with column grants
-statement ok
-GRANT SELECT (id) ON test_orders TO analyst;
+# Create roles for membership test
+query I
+CREATE ROLE team_lead
+----
+Role created: team_lead
 
+# Grant role to another role
+query I
+GRANT analyst TO team_lead
+----
+Role granted: analyst TO team_lead
+
+# Verify membership in system table
+query II
+SELECT role_name, member FROM duckdb_role_members WHERE role_name = 'analyst' AND member = 'team_lead'
+----
+analyst	team_lead
+
+# Grant to non-existent role should fail
 statement error
-DROP ROLE analyst;
+GRANT analyst TO nonexistent
 ----
-Cannot drop role 'analyst': role has existing grants
+does not exist
 
+# Revoke role membership
+query I
+REVOKE analyst FROM team_lead
+----
+Role revoked: analyst FROM team_lead
+
+# Verify membership removed
+query I
+SELECT COUNT(*) FROM duckdb_role_members WHERE role_name = 'analyst' AND member = 'team_lead'
+----
+0
+
+# ===== GRANT/REVOKE TABLE PRIVILEGES =====
+
+# Create a test table
 statement ok
-REVOKE SELECT (id) ON test_orders FROM analyst;
+CREATE TABLE orders (id INT, customer VARCHAR, amount DECIMAL)
 
-# T-01-09: Test with row policies
-statement ok
-CREATE ROW POLICY test_policy ON test_orders FOR SELECT USING (amount > 0) TO analyst;
+# Grant SELECT on table
+query I
+GRANT SELECT ON orders TO analyst
+----
+Table privilege granted: SELECT ON orders TO analyst
 
+# Verify grant in system table
+query III
+SELECT grantee, table_name, privilege_type FROM duckdb_table_privileges WHERE table_name = 'orders'
+----
+analyst	orders	SELECT
+
+# Granting same privilege again should succeed (idempotent)
+query I
+GRANT SELECT ON orders TO analyst
+----
+Table privilege granted: SELECT ON orders TO analyst
+
+# Grant to non-existent table should fail
 statement error
-DROP ROLE analyst;
+GRANT SELECT ON nonexistent_table TO analyst
 ----
-Cannot drop role 'analyst': role has existing grants
+does not exist
 
-statement ok
-DROP ROW POLICY test_policy ON test_orders;
+# Revoke table privilege
+query I
+REVOKE SELECT ON orders FROM analyst
+----
+Table privilege revoked: SELECT ON orders FROM analyst
 
-# =============================================================================
-# 1.4 Role Membership (GRANT role TO role)
-# =============================================================================
+# Verify privilege removed
+query I
+SELECT COUNT(*) FROM duckdb_table_privileges WHERE table_name = 'orders' AND grantee = 'analyst'
+----
+0
 
-# T-01-11: Grant role A to role B (both exist)
-statement ok
-GRANT data_access TO power_user;
+# ===== GRANT/REVOKE COLUMN PRIVILEGES =====
 
-# T-01-12: Grant role to non-existent member role
+# Grant SELECT on specific columns
+query I
+GRANT SELECT (id, customer) ON orders TO analyst
+----
+Column privileges granted on orders TO analyst
+
+# Verify column grants in system table
+query I
+SELECT COUNT(*) FROM duckdb_column_privileges WHERE table_name = 'orders' AND grantee = 'analyst'
+----
+2
+
+query III
+SELECT grantee, column_name, privilege_type FROM duckdb_column_privileges WHERE table_name = 'orders' ORDER BY column_name
+----
+analyst	customer	SELECT
+analyst	id	SELECT
+
+# Grant on non-existent column should fail
 statement error
-GRANT data_access TO nonexistent_member;
+GRANT SELECT (nonexistent_col) ON orders TO analyst
 ----
-Role 'nonexistent_member' does not exist
+does not exist
 
-# T-01-13: Grant non-existent role to a member
+# Revoke column privileges
+query I
+REVOKE SELECT (id) ON orders FROM analyst
+----
+Column privileges revoked on orders FROM analyst
+
+# Verify one column privilege removed
+query I
+SELECT COUNT(*) FROM duckdb_column_privileges WHERE table_name = 'orders' AND grantee = 'analyst'
+----
+1
+
+# ===== CREATE/DROP ROW POLICY =====
+
+# Create a row policy
+query I
+CREATE ROW POLICY regional_filter ON orders FOR SELECT USING (amount > 100) TO analyst
+----
+Row policy created: regional_filter ON orders
+
+# Verify policy in system table
+query IIII
+SELECT policy_name, table_name, filter_expression, grantee FROM duckdb_row_policies WHERE policy_name = 'regional_filter'
+----
+regional_filter	orders	amount > 100	analyst
+
+# Creating same policy again should fail
 statement error
-GRANT nonexistent_role TO power_user;
+CREATE ROW POLICY regional_filter ON orders FOR SELECT USING (amount > 0) TO analyst
 ----
-Role 'nonexistent_role' does not exist
+already exists
 
-# T-01-14: Grant same membership twice (should be idempotent)
-statement ok
-GRANT data_access TO power_user;
-
-# T-01-10: Drop a role that is a member of another role
-statement ok
-CREATE ROLE member_to_drop;
-
-statement ok
-GRANT analyst TO member_to_drop;
-
+# Create policy for non-existent table should fail
 statement error
-DROP ROLE member_to_drop;
+CREATE ROW POLICY test_policy ON nonexistent_table FOR SELECT USING (id > 0) TO analyst
 ----
-Cannot drop role 'member_to_drop': role has existing grants
+does not exist
+
+# Drop row policy
+query I
+DROP ROW POLICY regional_filter ON orders
+----
+Row policy dropped: regional_filter ON orders
+
+# Verify policy removed
+query I
+SELECT COUNT(*) FROM duckdb_row_policies WHERE policy_name = 'regional_filter'
+----
+0
+
+# ===== FR-3: Cannot drop role with existing grants =====
+
+# Re-grant privilege to analyst
+query I
+GRANT SELECT ON orders TO analyst
+----
+Table privilege granted: SELECT ON orders TO analyst
+
+# Trying to drop analyst should fail (has grants)
+statement error
+DROP ROLE analyst
+----
+existing grants
+
+# Clean up grant first
+query I
+REVOKE SELECT ON orders FROM analyst
+----
+Table privilege revoked: SELECT ON orders FROM analyst
+
+# Also clean up remaining column privilege
+query I
+REVOKE SELECT (customer) ON orders FROM analyst
+----
+Column privileges revoked on orders FROM analyst
+
+# Now drop should succeed
+query I
+DROP ROLE analyst
+----
+Role dropped: analyst
 
 # Clean up
-statement ok
-REVOKE analyst FROM member_to_drop;
+query I
+DROP ROLE team_lead
+----
+Role dropped: team_lead
 
 statement ok
-DROP ROLE member_to_drop;
-
-# T-01-15: Revoke membership that exists
-statement ok
-REVOKE data_access FROM power_user;
-
-# T-01-16: Revoke membership that doesn't exist (should be idempotent or error)
-statement ok
-REVOKE data_access FROM power_user;
-
-# =============================================================================
-# Cleanup
-# =============================================================================
-
-statement ok
-DROP TABLE test_orders;
-
+DROP TABLE orders

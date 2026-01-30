@@ -8,33 +8,66 @@ namespace duckdb {
 class ExtensionLoader;
 class Parser;
 
-//! Parse data for RBAC DDL statements
-struct RBACParseData : public ParserExtensionParseData {
-	enum class StatementType { CREATE_ROLE, DROP_ROLE, UNKNOWN };
+//===--------------------------------------------------------------------===//
+// RBAC Statement Types
+//===--------------------------------------------------------------------===//
 
-	StatementType statement_type;
-	string role_name;
-
-	RBACParseData(StatementType type, string name)
-		: statement_type(type), role_name(std::move(name)) {}
-
-	unique_ptr<ParserExtensionParseData> Copy() const override {
-		return make_uniq<RBACParseData>(statement_type, role_name);
-	}
-
-	string ToString() const override {
-		switch (statement_type) {
-		case StatementType::CREATE_ROLE:
-			return "CREATE ROLE " + role_name;
-		case StatementType::DROP_ROLE:
-			return "DROP ROLE " + role_name;
-		default:
-			return "UNKNOWN RBAC STATEMENT";
-		}
-	}
+enum class RBACStatementType {
+	CREATE_ROLE,
+	DROP_ROLE,
+	GRANT_ROLE,           // GRANT role TO member
+	REVOKE_ROLE,          // REVOKE role FROM member
+	GRANT_TABLE,          // GRANT SELECT ON table TO role
+	REVOKE_TABLE,         // REVOKE SELECT ON table FROM role
+	GRANT_COLUMN,         // GRANT SELECT (cols) ON table TO role
+	REVOKE_COLUMN,        // REVOKE SELECT (cols) ON table FROM role
+	CREATE_ROW_POLICY,    // CREATE ROW POLICY ... USING (expr) TO role
+	DROP_ROW_POLICY,      // DROP ROW POLICY name ON table
+	UNKNOWN
 };
 
-//! RBAC Parser Extension - intercepts RBAC DDL that DuckDB doesn't recognize
+//===--------------------------------------------------------------------===//
+// Parse Data for RBAC DDL statements
+//===--------------------------------------------------------------------===//
+
+struct RBACParseData : public ParserExtensionParseData {
+	RBACStatementType statement_type = RBACStatementType::UNKNOWN;
+
+	// Role management
+	string role_name;
+	string member_name;       // For GRANT role TO member
+
+	// Table/column privileges
+	string schema_name;       // Default: "main"
+	string table_name;
+	vector<string> column_names;  // For column-level grants
+
+	// Row policies
+	string policy_name;
+	string filter_expression;
+
+	RBACParseData() : schema_name("main") {}
+
+	unique_ptr<ParserExtensionParseData> Copy() const override {
+		auto copy = make_uniq<RBACParseData>();
+		copy->statement_type = statement_type;
+		copy->role_name = role_name;
+		copy->member_name = member_name;
+		copy->schema_name = schema_name;
+		copy->table_name = table_name;
+		copy->column_names = column_names;
+		copy->policy_name = policy_name;
+		copy->filter_expression = filter_expression;
+		return copy;
+	}
+
+	string ToString() const override;
+};
+
+//===--------------------------------------------------------------------===//
+// RBAC Parser Extension
+//===--------------------------------------------------------------------===//
+
 class RBACParserExtension : public ParserExtension {
 public:
 	RBACParserExtension();
@@ -47,8 +80,20 @@ public:
 	                                               unique_ptr<ParserExtensionParseData> parse_data);
 
 	//! Parser override: intercepts ALL SQL before DuckDB's parser (Spike 0.6C)
-	//! Used to rewrite SELECT * to explicit column lists for column-level security
 	static ParserOverrideResult ParserOverride(ParserExtensionInfo *info, const string &query);
+
+private:
+	// Parsing helpers
+	static bool TryParseCreateRole(const string &upper, const string &original, unique_ptr<RBACParseData> &out);
+	static bool TryParseDropRole(const string &upper, const string &original, unique_ptr<RBACParseData> &out);
+	static bool TryParseGrantRole(const string &upper, const string &original, unique_ptr<RBACParseData> &out);
+	static bool TryParseRevokeRole(const string &upper, const string &original, unique_ptr<RBACParseData> &out);
+	static bool TryParseGrantTable(const string &upper, const string &original, unique_ptr<RBACParseData> &out);
+	static bool TryParseRevokeTable(const string &upper, const string &original, unique_ptr<RBACParseData> &out);
+	static bool TryParseGrantColumn(const string &upper, const string &original, unique_ptr<RBACParseData> &out);
+	static bool TryParseRevokeColumn(const string &upper, const string &original, unique_ptr<RBACParseData> &out);
+	static bool TryParseCreateRowPolicy(const string &upper, const string &original, unique_ptr<RBACParseData> &out);
+	static bool TryParseDropRowPolicy(const string &upper, const string &original, unique_ptr<RBACParseData> &out);
 };
 
 //! Register the RBAC parser extension

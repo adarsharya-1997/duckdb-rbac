@@ -34,6 +34,7 @@ run:
 # Run tests on debug build
 test:
     ./build/debug/test/unittest "test/sql/rbac/00_extension_load.test"
+    ./build/debug/test/unittest "test/sql/rbac/01_roles.test"
 
 spike:
     ./build/debug/test/unittest "test/sql/rbac/00_spikes.test"

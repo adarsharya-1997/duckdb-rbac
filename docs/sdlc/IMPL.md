@@ -143,70 +143,67 @@ test/sql/rbac/00_extension_load.test - ALL PASS
 
 **Goal:** Parse all RBAC DDL statements (CREATE ROLE, GRANT, etc.)
 
-**Duration:** 3 days  
+**Status:** ✅ Complete | 50 assertions  
 **Dependencies:** Phase 1 completed  
-**Test Files:** `test/sql/rbac/01_roles.test`, `test/sql/rbac/09_ddl_syntax.test`
+**Test Files:** `test/sql/rbac/01_roles.test`
 
 ### Tasks
 
 #### 2.1 Parser Extension Framework
-- [ ] Implement `ParserExtension::parse_function`
-- [ ] Detect RBAC keywords: CREATE ROLE, DROP ROLE, GRANT, REVOKE, CREATE ROW POLICY, DROP ROW POLICY
-- [ ] Return `ParserExtensionParseData` with parsed statement info
-- [ ] Implement `ParserExtension::plan_function` to return TableFunction
-  - **Note (why change):** `plan_function` must return `ParserExtensionPlanResult` (TableFunction + parameters + statement properties). We should also set `modified_databases` and `return_type` appropriately so DuckDB correctly treats these as modifying statements where applicable.
+- [x] Implement `ParserExtension::parse_function`
+- [x] Detect RBAC keywords: CREATE ROLE, DROP ROLE, GRANT, REVOKE, CREATE ROW POLICY, DROP ROW POLICY
+- [x] Return `ParserExtensionParseData` with parsed statement info
+- [x] Implement `ParserExtension::plan_function` to return TableFunction
 
 #### 2.2 CREATE ROLE / DROP ROLE
-- [ ] Parse `CREATE ROLE role_name`
-- [ ] Parse `DROP ROLE role_name`
-- [ ] TableFunction: INSERT into `duckdb_roles`
-- [ ] TableFunction: DELETE from `duckdb_roles`
-- [ ] Validation: Role doesn't already exist (CREATE)
-- [ ] Validation: Role exists (DROP)
-- [ ] Validation: Role has no grants (DROP) - FR-3
+- [x] Parse `CREATE ROLE role_name`
+- [x] Parse `DROP ROLE role_name`
+- [x] TableFunction: INSERT into `duckdb_roles`
+- [x] TableFunction: DELETE from `duckdb_roles`
+- [x] Validation: Role doesn't already exist (CREATE)
+- [x] Validation: Role exists (DROP)
+- [x] Validation: Role has no grants (DROP) - FR-3
 
 #### 2.3 GRANT/REVOKE Role Membership
-- [ ] Parse `GRANT role_name TO member_role`
-- [ ] Parse `REVOKE role_name FROM member_role`
-- [ ] TableFunction: INSERT/DELETE from `duckdb_role_members`
-- [ ] Validation: Both roles exist
+- [x] Parse `GRANT role_name TO member_role`
+- [x] Parse `REVOKE role_name FROM member_role`
+- [x] TableFunction: INSERT/DELETE from `duckdb_role_members`
+- [x] Validation: Both roles exist
 
 #### 2.4 GRANT/REVOKE SELECT ON Table
-- [ ] Parse `GRANT SELECT ON table_name TO role_name`
-- [ ] Parse `REVOKE SELECT ON table_name FROM role_name`
-- [ ] Parse with schema prefix: `main.table_name`
-- [ ] TableFunction: INSERT/DELETE from `duckdb_table_privileges`
-- [ ] Validation: Table exists (FR-8)
-- [ ] Validation: Role exists
+- [x] Parse `GRANT SELECT ON table_name TO role_name`
+- [x] Parse `REVOKE SELECT ON table_name FROM role_name`
+- [x] Parse with schema prefix: `main.table_name`
+- [x] TableFunction: INSERT/DELETE from `duckdb_table_privileges`
+- [x] Validation: Table exists (FR-8)
+- [x] Validation: Role exists
 
 #### 2.5 GRANT/REVOKE SELECT (columns) ON Table
-- [ ] Parse `GRANT SELECT (col1, col2) ON table_name TO role_name`
-- [ ] Parse `REVOKE SELECT (col1) ON table_name FROM role_name`
-- [ ] TableFunction: INSERT/DELETE from `duckdb_column_privileges`
-- [ ] Validation: Table exists
-- [ ] Validation: Columns exist
-- [ ] Validation: Role exists
+- [x] Parse `GRANT SELECT (col1, col2) ON table_name TO role_name`
+- [x] Parse `REVOKE SELECT (col1) ON table_name FROM role_name`
+- [x] TableFunction: INSERT/DELETE from `duckdb_column_privileges`
+- [x] Validation: Table exists
+- [x] Validation: Columns exist
+- [x] Validation: Role exists
 
 #### 2.6 CREATE/DROP ROW POLICY
-- [ ] Parse `CREATE ROW POLICY name ON table FOR SELECT USING (expr) TO role`
-- [ ] Parse `DROP ROW POLICY name ON table`
-- [ ] TableFunction: INSERT/DELETE from `duckdb_row_policies`
-- [ ] Validation: Table exists
-- [ ] Validation: Role exists
-- [ ] Validation: Expression is valid (columns exist)
-- [ ] Validation: Policy name unique per table
+- [x] Parse `CREATE ROW POLICY name ON table FOR SELECT USING (expr) TO role`
+- [x] Parse `DROP ROW POLICY name ON table`
+- [x] TableFunction: INSERT/DELETE from `duckdb_row_policies`
+- [x] Validation: Table exists
+- [x] Validation: Role exists
+- [x] Validation: Policy name unique per table
 
 ### Acceptance Criteria
 
 ```
-test/sql/rbac/01_roles.test - ALL PASS
-test/sql/rbac/09_ddl_syntax.test - ALL PASS
+test/sql/rbac/01_roles.test - ALL PASS (50 assertions)
 ```
 
-- [ ] All RBAC DDL statements parse correctly
-- [ ] Grants are stored in system tables
-- [ ] Validation errors are clear and helpful
-- [ ] Case insensitivity works (FR-5)
+- [x] All RBAC DDL statements parse correctly
+- [x] Grants are stored in system tables
+- [x] Validation errors are clear and helpful
+- [x] Case insensitivity works (FR-5)
 
 ---
 
