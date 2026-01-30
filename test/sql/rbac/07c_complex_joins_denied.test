@@ -1,0 +1,92 @@
+# name: test/sql/rbac/07c_complex_joins_denied.test
+# description: Test JOINs fail when user lacks access to one table
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup as superuser
+# =============================================================================
+
+statement ok
+CREATE ROLE limited;
+
+statement ok
+CREATE TABLE orders (id INTEGER, customer_id INTEGER, amount DECIMAL);
+
+statement ok
+CREATE TABLE customers (id INTEGER, name VARCHAR);
+
+statement ok
+INSERT INTO orders VALUES (1, 1, 100.00), (2, 2, 200.00);
+
+statement ok
+INSERT INTO customers VALUES (1, 'Alice'), (2, 'Bob');
+
+# Grant access to ONLY orders (not customers)
+statement ok
+GRANT SELECT ON orders TO limited;
+
+# =============================================================================
+# Set identity as non-superuser with limited role
+# =============================================================================
+
+statement ok
+SELECT * FROM rbac_set_identity('limited_user', ['limited'], false);
+
+query I
+SELECT rbac_is_superuser();
+----
+false
+
+# =============================================================================
+# Test: Can query orders (allowed)
+# =============================================================================
+
+query I
+SELECT COUNT(*) FROM orders;
+----
+2
+
+# =============================================================================
+# Test: Cannot query customers (denied)
+# =============================================================================
+
+statement error
+SELECT * FROM customers;
+----
+lacks SELECT privilege on table
+
+# =============================================================================
+# Test: JOIN fails because user lacks access to customers
+# =============================================================================
+
+statement error
+SELECT o.id, c.name FROM orders o JOIN customers c ON o.customer_id = c.id;
+----
+lacks SELECT privilege on table
+
+# =============================================================================
+# Test: Subquery referencing forbidden table also fails
+# =============================================================================
+
+statement error
+SELECT * FROM orders WHERE customer_id IN (SELECT id FROM customers);
+----
+lacks SELECT privilege on table
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+REVOKE SELECT ON orders FROM limited;
+
+statement ok
+DROP TABLE orders;
+
+statement ok
+DROP TABLE customers;
+
+statement ok
+DROP ROLE limited;

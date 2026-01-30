@@ -56,7 +56,7 @@ Role 'nonexistent' does not exist
 statement error
 GRANT SELECT ON nonexistent TO analyst;
 ----
-Table 'nonexistent' does not exist
+Table 'main.nonexistent' does not exist
 
 # =============================================================================
 # Column Errors
@@ -79,13 +79,13 @@ CREATE ROW POLICY test_policy ON orders FOR SELECT USING (amount > 0) TO analyst
 statement error
 CREATE ROW POLICY test_policy ON orders FOR SELECT USING (amount > 0) TO analyst;
 ----
-Policy 'test_policy' already exists
+Row policy 'test_policy' already exists
 
 # Policy on nonexistent table
 statement error
 CREATE ROW POLICY bad ON nonexistent FOR SELECT USING (x > 0) TO analyst;
 ----
-Table 'nonexistent' does not exist
+Table 'main.nonexistent' does not exist
 
 # Policy for nonexistent role
 statement error
@@ -103,7 +103,7 @@ Column 'nonexistent_col' does not exist
 statement error
 DROP ROW POLICY nonexistent ON orders;
 ----
-Policy 'nonexistent' does not exist
+Row policy 'nonexistent' does not exist
 
 # =============================================================================
 # Drop Role with Dependencies

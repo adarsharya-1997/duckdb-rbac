@@ -121,11 +121,15 @@ create role CamelCase;
 statement ok
 CREATE ROLE lowercase;
 
-statement ok
+statement error
 drop role camelcase;
+----
+Role 'camelcase' does not exist
 
-statement ok
+statement error
 DROP ROLE LOWERCASE;
+----
+Role 'LOWERCASE' does not exist
 
 # =============================================================================
 # Cleanup

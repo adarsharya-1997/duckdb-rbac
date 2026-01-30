@@ -1,0 +1,158 @@
+# name: test/sql/rbac/07d_complex_row_policies.test
+# description: Test row policies work with complex queries (JOINs, aggregates)
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup as superuser
+# =============================================================================
+
+statement ok
+CREATE ROLE regional_user;
+
+statement ok
+CREATE TABLE orders (id INTEGER, customer_id INTEGER, amount DECIMAL, region VARCHAR);
+
+statement ok
+CREATE TABLE customers (id INTEGER, name VARCHAR, region VARCHAR);
+
+statement ok
+INSERT INTO orders VALUES 
+    (1, 1, 100.00, 'US'),
+    (2, 2, 200.00, 'EU'),
+    (3, 1, 150.00, 'US'),
+    (4, 3, 300.00, 'EU');
+
+statement ok
+INSERT INTO customers VALUES 
+    (1, 'Alice', 'US'),
+    (2, 'Bob', 'EU'),
+    (3, 'Charlie', 'EU');
+
+# Grant access to both tables
+statement ok
+GRANT SELECT ON orders TO regional_user;
+
+statement ok
+GRANT SELECT ON customers TO regional_user;
+
+# Create row policy: only see US region data
+statement ok
+CREATE ROW POLICY us_orders ON orders FOR SELECT USING (region = 'US') TO regional_user;
+
+statement ok
+CREATE ROW POLICY us_customers ON customers FOR SELECT USING (region = 'US') TO regional_user;
+
+# =============================================================================
+# Set identity as non-superuser
+# =============================================================================
+
+statement ok
+SELECT * FROM rbac_set_identity('us_user', ['regional_user'], false);
+
+# =============================================================================
+# Test: Row policies filter standalone queries
+# =============================================================================
+
+# Orders: only US (rows 1, 3)
+query I
+SELECT COUNT(*) FROM orders;
+----
+2
+
+# Customers: only US (row 1 - Alice)
+query I
+SELECT COUNT(*) FROM customers;
+----
+1
+
+# =============================================================================
+# Test: Row policies apply in JOINs
+# =============================================================================
+
+# JOIN should only see US orders joined with US customers
+query IT
+SELECT o.id, c.name FROM orders o JOIN customers c ON o.customer_id = c.id ORDER BY o.id;
+----
+1	Alice
+3	Alice
+
+# =============================================================================
+# Test: Aggregations work on filtered data
+# =============================================================================
+
+# SUM should only include US orders (100 + 150 = 250)
+query R
+SELECT SUM(amount) FROM orders;
+----
+250.00
+
+# AVG of US orders
+query R
+SELECT AVG(amount) FROM orders;
+----
+125.00
+
+# =============================================================================
+# Test: Subqueries with row policies
+# =============================================================================
+
+# Subquery in FROM - policy applies
+query I
+SELECT COUNT(*) FROM (SELECT * FROM orders) sub;
+----
+2
+
+# Subquery in WHERE - policy applies to both outer and inner
+query I
+SELECT COUNT(*) FROM orders WHERE customer_id IN (SELECT id FROM customers);
+----
+2
+
+# =============================================================================
+# Test: CTEs with row policies
+# =============================================================================
+
+query I
+SELECT COUNT(*) FROM (
+    WITH filtered AS (SELECT * FROM orders)
+    SELECT * FROM filtered
+);
+----
+2
+
+# =============================================================================
+# Test: GROUP BY with row policies
+# =============================================================================
+
+# Should only see US region in grouping
+query TR
+SELECT region, SUM(amount) FROM orders GROUP BY region ORDER BY region;
+----
+US	250.00
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+DROP ROW POLICY us_orders ON orders;
+
+statement ok
+DROP ROW POLICY us_customers ON customers;
+
+statement ok
+REVOKE SELECT ON orders FROM regional_user;
+
+statement ok
+REVOKE SELECT ON customers FROM regional_user;
+
+statement ok
+DROP TABLE orders;
+
+statement ok
+DROP TABLE customers;
+
+statement ok
+DROP ROLE regional_user;

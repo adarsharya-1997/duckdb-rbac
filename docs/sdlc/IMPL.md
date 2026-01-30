@@ -35,9 +35,9 @@ This document tracks the implementation of the RBAC extension. Each phase has:
 | Phase 3: Storage & Grants | ✅ Complete | 142 assertions |
 | Phase 4: Enforcement | ✅ Complete | 108 assertions |
 | Phase 5: Row Policies | ✅ Complete | 127 assertions |
-| Phase 6: Polish | ⬜ Not Started | - |
+| Phase 6: Polish | ✅ Complete | 94 assertions |
 
-**Overall:** 496 assertions passing
+**Overall:** 590 assertions passing
 
 ---
 
@@ -383,57 +383,63 @@ test/sql/rbac/04e_row_policies_no_policy.test - ALL PASS (15 assertions)
 
 ---
 
-## Phase 6: Polish & Edge Cases
+## Phase 6: Polish & Edge Cases ✅
 
 **Goal:** Handle complex queries, improve error messages, complete introspection.
 
-**Duration:** 2 days  
+**Status:** ✅ Complete | 94 assertions  
 **Dependencies:** Phase 5 completed  
-**Test Files:** `test/sql/rbac/07_complex_queries.test`, `test/sql/rbac/08_error_messages.test`
+**Test Files:**
+- `test/sql/rbac/07b_complex_joins_allowed.test` (21 assertions) - JOINs with access
+- `test/sql/rbac/07c_complex_joins_denied.test` (18 assertions) - JOINs denied
+- `test/sql/rbac/07d_complex_row_policies.test` (34 assertions) - Row policies with complex queries
+- `test/sql/rbac/08_error_messages.test` (21 assertions) - Error messages
 
 ### Tasks
 
 #### 6.1 Complex Query Support
-- [ ] JOINs: Check permissions on ALL tables
-- [ ] JOINs: Apply row policies to each table independently
-- [ ] Self-joins: Same policy applies to all aliases
-- [ ] Subqueries: Check permissions on subquery tables
-- [ ] CTEs: Check permissions on CTE source tables
-- [ ] Recursive CTEs: Policy applies to all references
-- [ ] UNION/INTERSECT/EXCEPT: Check all branches
+- [x] JOINs: Check permissions on ALL tables
+- [x] JOINs: Apply row policies to each table independently
+- [x] Self-joins: Same policy applies to all aliases
+- [x] Subqueries: Check permissions on subquery tables
+- [x] CTEs: Check permissions on CTE source tables
+- [x] Recursive CTEs: Policy applies to all references
+- [x] UNION/INTERSECT/EXCEPT: Check all branches
 
 #### 6.2 Aggregations with Policies
-- [ ] Aggregates compute on filtered rows
-- [ ] COUNT(*) counts only visible rows
-- [ ] SUM/AVG/etc. aggregate only visible data
+- [x] Aggregates compute on filtered rows
+- [x] COUNT(*) counts only visible rows
+- [x] SUM/AVG/etc. aggregate only visible data
 
 #### 6.3 EXPLAIN Support
-- [ ] EXPLAIN requires same permissions as the query
-- [ ] Don't leak information via EXPLAIN
+- [x] EXPLAIN requires same permissions as the query
+- [x] Don't leak information via EXPLAIN
 
 #### 6.4 Error Message Quality
-- [ ] All errors include user name
-- [ ] All errors include table name
-- [ ] Column errors include column name
-- [ ] Format: `"User 'X' lacks SELECT privilege on column 'Y' of table 'Z'"`
+- [x] All errors include user name
+- [x] All errors include table name
+- [x] Column errors include column name
+- [x] Format: `"User 'X' lacks SELECT privilege on column 'Y' of table 'Z'"`
 
 #### 6.5 Edge Cases
-- [ ] Empty tables with policies
-- [ ] NULL handling in policy expressions
-- [ ] Very long policy expressions
-- [ ] Many policies on same table
-- [ ] User with many roles
+- [x] Empty tables with policies
+- [x] NULL handling in policy expressions
+- [x] Very long policy expressions
+- [x] Many policies on same table
+- [x] User with many roles
 
 ### Acceptance Criteria
 
 ```
-test/sql/rbac/07_complex_queries.test - ALL PASS
-test/sql/rbac/08_error_messages.test - ALL PASS
+test/sql/rbac/07b_complex_joins_allowed.test - ALL PASS (21 assertions)
+test/sql/rbac/07c_complex_joins_denied.test - ALL PASS (18 assertions)
+test/sql/rbac/07d_complex_row_policies.test - ALL PASS (34 assertions)
+test/sql/rbac/08_error_messages.test - ALL PASS (21 assertions)
 ```
 
-- [ ] All complex query patterns work correctly
-- [ ] Error messages are helpful and consistent
-- [ ] No edge case crashes
+- [x] All complex query patterns work correctly
+- [x] Error messages are helpful and consistent
+- [x] No edge case crashes
 
 ---
 
@@ -490,5 +496,5 @@ make test_debug
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 1.0 | Dec 2024 | Initial implementation plan |
+| 1.0 | Dec 2025 | Initial implementation plan |
 

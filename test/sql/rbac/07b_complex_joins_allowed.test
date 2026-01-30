@@ -1,0 +1,88 @@
+# name: test/sql/rbac/07b_complex_joins_allowed.test
+# description: Test JOINs work when user has access to all tables
+# group: [rbac]
+
+require quack
+
+# =============================================================================
+# Setup as superuser
+# =============================================================================
+
+statement ok
+CREATE ROLE analyst;
+
+statement ok
+CREATE TABLE orders (id INTEGER, customer_id INTEGER, amount DECIMAL);
+
+statement ok
+CREATE TABLE customers (id INTEGER, name VARCHAR);
+
+statement ok
+INSERT INTO orders VALUES (1, 1, 100.00), (2, 2, 200.00), (3, 1, 150.00);
+
+statement ok
+INSERT INTO customers VALUES (1, 'Alice'), (2, 'Bob');
+
+# Grant access to BOTH tables
+statement ok
+GRANT SELECT ON orders TO analyst;
+
+statement ok
+GRANT SELECT ON customers TO analyst;
+
+# =============================================================================
+# Set identity as non-superuser with analyst role
+# =============================================================================
+
+statement ok
+SELECT * FROM rbac_set_identity('test_user', ['analyst'], false);
+
+query I
+SELECT rbac_is_superuser();
+----
+false
+
+# =============================================================================
+# Test: JOINs work when user has access to both tables
+# =============================================================================
+
+# Simple JOIN
+query II
+SELECT o.id, c.name FROM orders o JOIN customers c ON o.customer_id = c.id ORDER BY o.id;
+----
+1	Alice
+2	Bob
+3	Alice
+
+# LEFT JOIN
+query II
+SELECT o.id, c.name FROM orders o LEFT JOIN customers c ON o.customer_id = c.id ORDER BY o.id;
+----
+1	Alice
+2	Bob
+3	Alice
+
+# Aggregation with JOIN
+query I
+SELECT COUNT(*) FROM orders o JOIN customers c ON o.customer_id = c.id;
+----
+3
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+REVOKE SELECT ON orders FROM analyst;
+
+statement ok
+REVOKE SELECT ON customers FROM analyst;
+
+statement ok
+DROP TABLE orders;
+
+statement ok
+DROP TABLE customers;
+
+statement ok
+DROP ROLE analyst;
