@@ -123,3 +123,61 @@ SELECT * FROM policy_string_filter ORDER BY id
 ----
 1	active
 3	active
+
+# ===== Spike 0.6: SELECT * Column-Level Permission Feasibility =====
+
+# Part A: Verify optimizer sees expanded columns (not SELECT *)
+# The optimizer will log column_ids to stderr
+statement ok
+CREATE TABLE col_test (a INT, b INT, c_secret INT)
+
+statement ok
+INSERT INTO col_test VALUES (1, 2, 999), (10, 20, 888)
+
+# This SELECT * should show optimizer sees all 3 columns
+query III
+SELECT * FROM col_test ORDER BY a
+----
+1	2	999
+10	20	888
+
+# This explicit SELECT should show optimizer sees only 2 columns
+query II
+SELECT a, b FROM col_test ORDER BY a
+----
+1	2
+10	20
+
+# Part B: Test if modifying column_ids in optimizer can filter columns
+# FINDING: This DOES NOT work - removing columns from column_ids causes binding errors
+# because other parts of the plan still reference the removed columns
+statement ok
+CREATE TABLE col_test_filter (a INT, b INT, c_secret INT)
+
+statement ok
+INSERT INTO col_test_filter VALUES (1, 2, 999), (10, 20, 888)
+
+# Attempt to SELECT * but with c_secret filtered out by optimizer
+# RESULT: Fails with "Failed to bind column reference" - downstream still expects c_secret
+# statement error
+# SELECT * FROM col_test_filter ORDER BY a
+# ----
+# Failed to bind column reference
+
+# Part C: Test parser_override to rewrite SELECT * before binding
+# Use 'fallback' mode - allows override to return DISPLAY_ORIGINAL_ERROR to fall through
+statement ok
+SET allow_parser_override_extension = 'fallback'
+
+statement ok
+CREATE TABLE col_test_rewrite (a INT, b INT, c_secret INT)
+
+statement ok
+INSERT INTO col_test_rewrite VALUES (1, 2, 999), (10, 20, 888)
+
+# This SELECT * should be rewritten to SELECT a, b by parser_override
+query II
+SELECT * FROM col_test_rewrite ORDER BY a
+----
+1	2
+10	20

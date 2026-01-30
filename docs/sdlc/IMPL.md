@@ -28,7 +28,7 @@ This document tracks the implementation of the RBAC extension. Each phase has:
 
 | Phase | Status | Tests Passing |
 |-------|--------|---------------|
-| Phase 0: Spikes | ⬜ Not Started | N/A |
+| Phase 0: Spikes | ✅ Complete | 6/6 |
 | Phase 1: Foundation | ⬜ Not Started | 0/6 |
 | Phase 2: DDL Parsing | ⬜ Not Started | 0/31 |
 | Phase 3: Storage & Grants | ⬜ Not Started | 0/20 |
@@ -51,11 +51,12 @@ This document tracks the implementation of the RBAC extension. Each phase has:
 
 Execute spikes in this order (each builds on the previous):
 
-1. **Spike 0.4** (ClientContextState) → easiest, no parser/optimizer hooks yet
-2. **Spike 0.2** (OptimizerExtension throws) → introduces optimizer hook
-3. **Spike 0.3** (OptimizerExtension injects filter) → extends optimizer work
-4. **Spike 0.1** (ParserExtension catches DDL) → separate subsystem
-5. **Spike 0.5** (Expression binding) → hardest, builds on 0.3
+1. **Spike 0.4** (ClientContextState) → easiest, no parser/optimizer hooks yet ✅
+2. **Spike 0.2** (OptimizerExtension throws) → introduces optimizer hook ✅
+3. **Spike 0.3** (OptimizerExtension injects filter) → extends optimizer work ✅
+4. **Spike 0.1** (ParserExtension catches DDL) → separate subsystem ✅
+5. **Spike 0.5** (Expression binding) → hardest, builds on 0.3 ✅
+6. **Spike 0.6** (SELECT * column filtering) → determines column-level approach ✅
 
 ### File Organization
 
@@ -205,7 +206,107 @@ SELECT * FROM policy_test;
 
 **Note (why this matters):** Row policy parsing is easy, but *binding* to correct `ColumnBinding`/scope during optimizer-time rewriting is the highest-risk integration point; we want this proven early.
 
-- [ ] Spike 0.5 complete
+- [x] Spike 0.5 complete
+
+---
+
+#### Spike 0.6: SELECT * Column-Level Permission Feasibility
+
+**Goal:** Determine if column-level permissions can work with `SELECT *` without core DuckDB changes.
+
+**Background (from RFC.md):**
+DuckDB expands `SELECT *` to an explicit column list during binding, **before** the optimizer extension runs. This means:
+```sql
+-- Table: orders (id, customer, amount, secret_notes)
+SELECT * FROM orders;
+-- After binding: SELECT id, customer, amount, secret_notes FROM orders
+-- Optimizer hook sees all 4 columns, can't tell it was SELECT *
+```
+
+**Three approaches to test:**
+
+**Part A: Confirm optimizer sees expanded columns**
+1. Create table with columns `(a, b, c_secret)`
+2. In optimizer hook, log `LogicalGet::column_ids` for the table
+3. Run `SELECT *` and `SELECT a, b` - verify optimizer sees different column sets
+4. **Expected:** Optimizer sees all columns for `SELECT *`, only requested for explicit list
+
+**Part B: Test column filtering in optimizer**
+1. When seeing `LogicalGet` for test table, try to remove `c_secret` from `column_ids`
+2. See if query still executes and only returns allowed columns
+3. **Expected:** Likely fails - removing columns may break downstream operators
+
+**Part C: Test `parser_override` for query rewriting**
+1. Implement `parser_override_function_t` that intercepts all SQL
+2. Detect `SELECT *` on specific table, rewrite to explicit allowed columns
+3. Return modified statement
+4. **Expected:** Works but requires re-parsing rewritten SQL
+
+**Implementation:**
+
+```cpp
+// Part A & B: In rbac_optimizer.cpp
+void WalkPlanWithParent(unique_ptr<LogicalOperator> &op_ptr) {
+    if (op_ptr->type == LogicalOperatorType::LOGICAL_GET) {
+        auto &get = op_ptr->Cast<LogicalGet>();
+        auto *table = get.GetTable();
+        if (table && table->name == "col_test") {
+            // Part A: Log what columns optimizer sees
+            fprintf(stderr, "col_test scan sees %zu columns: ", get.GetColumnIds().size());
+            for (auto &col_id : get.GetColumnIds()) {
+                fprintf(stderr, "%s ", get.names[col_id.GetPrimaryIndex()].c_str());
+            }
+            fprintf(stderr, "\n");
+            
+            // Part B: Try to filter out 'c_secret' column
+            // (test if modifying column_ids breaks execution)
+        }
+    }
+    // ... recurse
+}
+
+// Part C: In rbac_parser.cpp - add parser_override
+ParserOverrideResult ParserOverride(ParserExtensionInfo *info, const string &query) {
+    // Detect "SELECT * FROM col_test" and rewrite to "SELECT a, b FROM col_test"
+    // Return ParserExtensionResultType::PARSE_SUCCESSFUL with new statements
+    // or ParserExtensionResultType::DISPLAY_ORIGINAL_ERROR to fall through
+}
+```
+
+**Test SQL:**
+```sql
+LOAD 'quack';
+SET allow_parser_override_extension = 'strict_when_supported';
+
+CREATE TABLE col_test (a INT, b INT, c_secret INT);
+INSERT INTO col_test VALUES (1, 2, 999), (10, 20, 888);
+
+-- Part A: Verify expansion
+SELECT * FROM col_test;       -- Optimizer should see a, b, c_secret
+SELECT a, b FROM col_test;    -- Optimizer should see a, b only
+
+-- Part B: Test column filtering (if implemented)
+-- Expected: Either works (returns a, b only) or errors
+
+-- Part C: Test parser_override rewrite
+-- If working, SELECT * should transparently become SELECT a, b
+SELECT * FROM col_test;
+-- Expected: returns only a, b columns if parser_override works
+```
+
+**Success Criteria:**
+- [x] Part A confirms optimizer sees all columns for SELECT *
+- [x] Part B determines if column_ids can be narrowed (**NO - causes binding errors**)
+- [x] Part C determines if parser_override is viable for SELECT * rewriting (**YES!**)
+
+**Findings:**
+- **Part A:** Optimizer sees `[a, b, c_secret]` for `SELECT *`, only `[a, b]` for explicit columns
+- **Part B:** Removing columns from `column_ids` fails with "Failed to bind column reference" - downstream operators still reference removed columns
+- **Part C:** `parser_override` with `fallback` mode successfully rewrites `SELECT *` to explicit column list before binding
+
+**Decision:** Use `parser_override` approach (Option A from RFC) for column-level permissions with `SELECT *`
+
+- [x] Spike 0.6 complete
 
 ---
 
@@ -276,10 +377,11 @@ SELECT * FROM policy_test ORDER BY id
 
 ### Acceptance Criteria
 
-- [ ] All 5 spikes demonstrate expected behavior
-- [ ] `test/sql/rbac/00_spikes.test` passes
-- [ ] Document any surprises or limitations discovered
-- [ ] Decision: Proceed with implementation or adjust approach
+- [x] All 6 spikes demonstrate expected behavior
+- [x] `test/sql/rbac/00_spikes.test` passes (54 assertions)
+- [x] Document any surprises or limitations discovered (see `docs/sdlc/SPIKE.md`)
+- [x] Decision: **Proceed with implementation** (core RBAC)
+- [x] Spike 0.6: Use `parser_override` for column-level SELECT * rewriting
 
 ---
 

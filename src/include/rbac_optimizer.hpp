@@ -32,6 +32,9 @@ private:
 
 	//! Inject a LogicalFilter with parsed expression string (Spike 0.5)
 	static void InjectParsedFilter(unique_ptr<LogicalOperator> &op_ptr, LogicalGet &get, const string &filter_expr);
+
+	//! Filter column_ids to remove a forbidden column (Spike 0.6B)
+	static void FilterColumnIds(LogicalGet &get, const string &forbidden_column);
 };
 
 //! Register the RBAC optimizer extension

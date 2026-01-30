@@ -181,6 +181,29 @@ void RBACOptimizerExtension::WalkPlanWithParent(unique_ptr<LogicalOperator> &op_
 				InjectParsedFilter(op_ptr, get, "status = 'active'");
 				return;
 			}
+
+			// ===== Spike 0.6: SELECT * Column-Level Permission Feasibility =====
+
+			// Part A: Log what columns the optimizer sees for col_test
+			if (table_name == "col_test") {
+				// Just log - don't modify anything
+				// This confirms optimizer sees expanded column list, not SELECT *
+				fprintf(stderr, "[Spike 0.6A] col_test scan - column_ids: [");
+				auto &col_ids = get.GetColumnIds();
+				for (idx_t i = 0; i < col_ids.size(); i++) {
+					if (i > 0) fprintf(stderr, ", ");
+					idx_t col_idx = col_ids[i].GetPrimaryIndex();
+					fprintf(stderr, "%s", get.names[col_idx].c_str());
+				}
+				fprintf(stderr, "] (total: %zu)\n", col_ids.size());
+				return;
+			}
+
+			// Part B: Try to filter out 'c_secret' column from col_test_filter
+			if (table_name == "col_test_filter") {
+				FilterColumnIds(get, "c_secret");
+				return;
+			}
 		}
 	}
 
@@ -245,6 +268,52 @@ void RBACOptimizerExtension::InjectParsedFilter(unique_ptr<LogicalOperator> &op_
 
 	// Replace the original pointer with the filter
 	op_ptr = std::move(filter);
+}
+
+void RBACOptimizerExtension::FilterColumnIds(LogicalGet &get, const string &forbidden_column) {
+	// Spike 0.6B: Try to remove a column from the scan
+	// Find the column index to remove
+	idx_t forbidden_idx = DConstants::INVALID_INDEX;
+	for (idx_t i = 0; i < get.names.size(); i++) {
+		if (get.names[i] == forbidden_column) {
+			forbidden_idx = i;
+			break;
+		}
+	}
+
+	if (forbidden_idx == DConstants::INVALID_INDEX) {
+		// Column not in table definition - nothing to filter
+		return;
+	}
+
+	// Get mutable reference to column_ids and filter out the forbidden column
+	auto &col_ids = get.GetMutableColumnIds();
+
+	fprintf(stderr, "[Spike 0.6B] Before filter - column_ids: [");
+	for (idx_t i = 0; i < col_ids.size(); i++) {
+		if (i > 0) fprintf(stderr, ", ");
+		fprintf(stderr, "%s", get.names[col_ids[i].GetPrimaryIndex()].c_str());
+	}
+	fprintf(stderr, "]\n");
+
+	// Remove the forbidden column from column_ids
+	vector<ColumnIndex> new_col_ids;
+	for (auto &col_id : col_ids) {
+		if (col_id.GetPrimaryIndex() != forbidden_idx) {
+			new_col_ids.push_back(col_id);
+		}
+	}
+
+	// Replace column_ids using SetColumnIds
+	get.SetColumnIds(std::move(new_col_ids));
+
+	fprintf(stderr, "[Spike 0.6B] After filter - column_ids: [");
+	auto &updated_ids = get.GetColumnIds();
+	for (idx_t i = 0; i < updated_ids.size(); i++) {
+		if (i > 0) fprintf(stderr, ", ");
+		fprintf(stderr, "%s", get.names[updated_ids[i].GetPrimaryIndex()].c_str());
+	}
+	fprintf(stderr, "]\n");
 }
 
 void RegisterRBACOptimizer(ExtensionLoader &loader) {

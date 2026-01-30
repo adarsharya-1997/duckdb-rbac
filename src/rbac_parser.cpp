@@ -3,6 +3,8 @@
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/extension_callback_manager.hpp"
+#include "duckdb/parser/parser.hpp"
+#include <regex>
 
 namespace duckdb {
 
@@ -59,6 +61,7 @@ static TableFunction GetRBACDDLFunction() {
 RBACParserExtension::RBACParserExtension() {
 	parse_function = ParseFunction;
 	plan_function = PlanFunction;
+	parser_override = ParserOverride;  // Spike 0.6C: intercept all SQL for SELECT * rewriting
 }
 
 ParserExtensionParseResult RBACParserExtension::ParseFunction(ParserExtensionInfo *info, const string &query) {
@@ -124,6 +127,62 @@ ParserExtensionPlanResult RBACParserExtension::PlanFunction(ParserExtensionInfo 
 		break;
 	}
 
+	return result;
+}
+
+//===--------------------------------------------------------------------===//
+// Spike 0.6C: Parser Override for SELECT * Rewriting
+//===--------------------------------------------------------------------===//
+
+ParserOverrideResult RBACParserExtension::ParserOverride(ParserExtensionInfo *info, const string &query) {
+	// Normalize the query
+	string trimmed = query;
+	StringUtil::Trim(trimmed);
+	string upper = StringUtil::Upper(trimmed);
+
+	// Remove trailing semicolon for matching
+	if (StringUtil::EndsWith(upper, ";")) {
+		upper = upper.substr(0, upper.length() - 1);
+		StringUtil::Trim(upper);
+	}
+
+	// Spike 0.6C: Detect "SELECT * FROM col_test_rewrite" and rewrite to explicit columns
+	// This simulates column-level filtering for SELECT *
+	if (upper == "SELECT * FROM COL_TEST_REWRITE" ||
+	    upper == "SELECT * FROM COL_TEST_REWRITE ORDER BY A") {
+
+		fprintf(stderr, "[Spike 0.6C] Intercepted: %s\n", query.c_str());
+
+		// Rewrite to exclude c_secret column
+		string rewritten;
+		if (upper == "SELECT * FROM COL_TEST_REWRITE ORDER BY A") {
+			rewritten = "SELECT a, b FROM col_test_rewrite ORDER BY a";
+		} else {
+			rewritten = "SELECT a, b FROM col_test_rewrite";
+		}
+
+		fprintf(stderr, "[Spike 0.6C] Rewriting to: %s\n", rewritten.c_str());
+
+		// Parse the rewritten query using DuckDB's native parser
+		try {
+			Parser parser;
+			parser.ParseQuery(rewritten);
+
+			ParserOverrideResult result;
+			result.type = ParserExtensionResultType::PARSE_SUCCESSFUL;
+			result.statements = std::move(parser.statements);
+			return result;
+		} catch (Exception &e) {
+			ParserOverrideResult result;
+			result.type = ParserExtensionResultType::DISPLAY_ORIGINAL_ERROR;
+			result.error = ErrorData(e);
+			return result;
+		}
+	}
+
+	// Not a query we want to rewrite - return empty result to fall through to normal parsing
+	ParserOverrideResult result;
+	result.type = ParserExtensionResultType::DISPLAY_ORIGINAL_ERROR;
 	return result;
 }
 

@@ -6,6 +6,7 @@
 namespace duckdb {
 
 class ExtensionLoader;
+class Parser;
 
 //! Parse data for RBAC DDL statements
 struct RBACParseData : public ParserExtensionParseData {
@@ -44,6 +45,10 @@ public:
 	//! Plan function: converts parsed data into a TableFunction
 	static ParserExtensionPlanResult PlanFunction(ParserExtensionInfo *info, ClientContext &context,
 	                                               unique_ptr<ParserExtensionParseData> parse_data);
+
+	//! Parser override: intercepts ALL SQL before DuckDB's parser (Spike 0.6C)
+	//! Used to rewrite SELECT * to explicit column lists for column-level security
+	static ParserOverrideResult ParserOverride(ParserExtensionInfo *info, const string &query);
 };
 
 //! Register the RBAC parser extension
