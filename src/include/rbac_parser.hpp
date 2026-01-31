@@ -2,6 +2,8 @@
 
 #include "duckdb.hpp"
 #include "duckdb/parser/parser_extension.hpp"
+#include "duckdb/parser/qualified_name.hpp"
+#include "duckdb/parser/simplified_token.hpp"
 
 namespace duckdb {
 
@@ -65,6 +67,59 @@ struct RBACParseData : public ParserExtensionParseData {
 };
 
 //===--------------------------------------------------------------------===//
+// Token Stream for RBAC DDL Parsing
+//===--------------------------------------------------------------------===//
+
+//! RBACTokenStream wraps Parser::Tokenize() output for cleaner token-based parsing.
+//! Handles keyword matching, identifier extraction (including quoted), and table references.
+class RBACTokenStream {
+public:
+	explicit RBACTokenStream(const string &query);
+
+	//! Check if more tokens are available
+	bool HasMore() const;
+	//! Move to next token
+	void Advance();
+	//! Get current token type
+	SimplifiedTokenType CurrentType() const;
+	//! Get text of current token from original query
+	string CurrentText() const;
+	//! Get remaining query text from current position
+	string RemainingText() const;
+
+	//! Check if current token is a keyword matching the given string (case-insensitive)
+	bool IsKeyword(const string &kw) const;
+	//! Match and consume a keyword, returns true if matched
+	bool MatchKeyword(const string &kw);
+	//! Expect a keyword, throws if not found
+	void ExpectKeyword(const string &kw);
+
+	//! Check if current token is an operator matching the given character
+	bool IsOperator(char op) const;
+	//! Match and consume an operator, returns true if matched
+	bool MatchOperator(char op);
+
+	//! Consume an identifier (handles quoted identifiers), throws if not found
+	string ConsumeIdentifier();
+	//! Consume a qualified table reference (schema.table), returns schema and table
+	QualifiedName ConsumeTableRef();
+	//! Consume a comma-separated list of identifiers within parentheses
+	vector<string> ConsumeColumnList();
+	//! Consume everything until a specific keyword (for USING expressions)
+	string ConsumeUntilKeyword(const string &kw);
+
+private:
+	string query_;
+	vector<SimplifiedToken> tokens_;
+	idx_t pos_;
+
+	//! Get the end position of current token
+	idx_t CurrentEnd() const;
+	//! Extract identifier text, handling quoted identifiers (strips quotes, unescapes)
+	string ExtractIdentifier(idx_t start, idx_t end) const;
+};
+
+//===--------------------------------------------------------------------===//
 // RBAC Parser Extension
 //===--------------------------------------------------------------------===//
 
@@ -80,17 +135,17 @@ public:
 	                                               unique_ptr<ParserExtensionParseData> parse_data);
 
 private:
-	// Parsing helpers
-	static bool TryParseCreateRole(const string &upper, const string &original, unique_ptr<RBACParseData> &out);
-	static bool TryParseDropRole(const string &upper, const string &original, unique_ptr<RBACParseData> &out);
-	static bool TryParseGrantRole(const string &upper, const string &original, unique_ptr<RBACParseData> &out);
-	static bool TryParseRevokeRole(const string &upper, const string &original, unique_ptr<RBACParseData> &out);
-	static bool TryParseGrantTable(const string &upper, const string &original, unique_ptr<RBACParseData> &out);
-	static bool TryParseRevokeTable(const string &upper, const string &original, unique_ptr<RBACParseData> &out);
-	static bool TryParseGrantColumn(const string &upper, const string &original, unique_ptr<RBACParseData> &out);
-	static bool TryParseRevokeColumn(const string &upper, const string &original, unique_ptr<RBACParseData> &out);
-	static bool TryParseCreateRowPolicy(const string &upper, const string &original, unique_ptr<RBACParseData> &out);
-	static bool TryParseDropRowPolicy(const string &upper, const string &original, unique_ptr<RBACParseData> &out);
+	// Token-based parsing helpers
+	static bool TryParseCreateRole(RBACTokenStream &tokens, unique_ptr<RBACParseData> &out);
+	static bool TryParseDropRole(RBACTokenStream &tokens, unique_ptr<RBACParseData> &out);
+	static bool TryParseGrantRole(RBACTokenStream &tokens, unique_ptr<RBACParseData> &out);
+	static bool TryParseRevokeRole(RBACTokenStream &tokens, unique_ptr<RBACParseData> &out);
+	static bool TryParseGrantTable(RBACTokenStream &tokens, unique_ptr<RBACParseData> &out);
+	static bool TryParseRevokeTable(RBACTokenStream &tokens, unique_ptr<RBACParseData> &out);
+	static bool TryParseGrantColumn(RBACTokenStream &tokens, unique_ptr<RBACParseData> &out);
+	static bool TryParseRevokeColumn(RBACTokenStream &tokens, unique_ptr<RBACParseData> &out);
+	static bool TryParseCreateRowPolicy(RBACTokenStream &tokens, unique_ptr<RBACParseData> &out);
+	static bool TryParseDropRowPolicy(RBACTokenStream &tokens, unique_ptr<RBACParseData> &out);
 };
 
 //! Register the RBAC parser extension

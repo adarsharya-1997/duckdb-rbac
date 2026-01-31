@@ -1,5 +1,5 @@
-# name: test/sql/rbac/25_whitespace_ddl_parsing.test
-# description: DDL parsing with whitespace/newlines
+# name: test/sql/rbac/ddl_whitespace.test
+# description: DDL parsing with whitespace/newlines (supported with token-based parser)
 # group: [rbac]
 
 require quack
@@ -15,17 +15,19 @@ statement ok
 CREATE ROLE ws_role;
 
 # =============================================================================
-# Whitespace-heavy parsing (note: parser does not accept newlines in keywords)
+# Whitespace-heavy parsing (token-based parser handles newlines correctly)
 # =============================================================================
 
-statement error
+# Multi-line CREATE ROLE
+query I
 CREATE ROLE
     ws_role_2
 ;
 ----
-syntax error
+Role created: ws_role_2
 
-statement error
+# Multi-line GRANT SELECT
+query I
 GRANT
     SELECT
 ON
@@ -34,9 +36,10 @@ TO
     ws_role
 ;
 ----
-syntax error
+Table privilege granted: SELECT ON ws_table TO ws_role
 
-statement error
+# Multi-line column list
+query I
 GRANT SELECT
 (
     id,
@@ -45,9 +48,10 @@ GRANT SELECT
 ON ws_table TO ws_role_2
 ;
 ----
-syntax error
+Column privileges granted on ws_table TO ws_role_2
 
-statement error
+# Multi-line CREATE ROW POLICY
+query I
 CREATE ROW POLICY
     ws_policy
 ON
@@ -61,16 +65,17 @@ TO
     ws_role
 ;
 ----
-syntax error
+Row policy created: ws_policy ON ws_table
 
-statement error
+# Multi-line DROP ROW POLICY
+query I
 DROP ROW POLICY
     ws_policy
 ON
     ws_table
 ;
 ----
-syntax error
+Row policy dropped: ws_policy ON ws_table
 
 # =============================================================================
 # Cleanup
@@ -80,13 +85,13 @@ statement ok
 REVOKE SELECT ON ws_table FROM ws_role;
 
 statement ok
+REVOKE SELECT (id, name) ON ws_table FROM ws_role_2;
+
+statement ok
 DROP TABLE ws_table;
 
 statement ok
 DROP ROLE ws_role;
-
-statement ok
-CREATE ROLE ws_role_2;
 
 statement ok
 DROP ROLE ws_role_2;

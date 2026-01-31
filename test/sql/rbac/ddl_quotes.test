@@ -1,0 +1,255 @@
+# name: test/sql/rbac/ddl_quotes.test
+# description: Quoted identifier support in RBAC DDL
+# group: [rbac]
+# requirements: Bug #8 - Parser should handle quoted identifiers
+
+require quack
+
+# =============================================================================
+# Setup
+# =============================================================================
+
+statement ok
+CREATE TABLE "CaseTable" ("ColA" INTEGER, "Col B" VARCHAR);
+
+statement ok
+INSERT INTO "CaseTable" VALUES (1, 'test');
+
+statement ok
+CREATE TABLE normal_table (id INTEGER, name VARCHAR);
+
+statement ok
+INSERT INTO normal_table VALUES (1, 'test');
+
+# =============================================================================
+# 1. Quoted Role Names
+# =============================================================================
+
+# T-QI-01: Role name with spaces
+query I
+CREATE ROLE "my role"
+----
+Role created: my role
+
+# T-QI-02: Role name with special characters
+query I
+CREATE ROLE "role-with-dash"
+----
+Role created: role-with-dash
+
+# T-QI-03: Role name that is a reserved word
+query I
+CREATE ROLE "select"
+----
+Role created: select
+
+query I
+CREATE ROLE "from"
+----
+Role created: from
+
+# T-QI-04: Role name with dots
+query I
+CREATE ROLE "role.with.dots"
+----
+Role created: role.with.dots
+
+# T-QI-05: Role name with escaped quotes (doubled)
+query I
+CREATE ROLE "role""quoted"
+----
+Role created: role"quoted
+
+# T-QI-06: Drop quoted role
+query I
+DROP ROLE "my role"
+----
+Role dropped: my role
+
+# =============================================================================
+# 2. Grant/Revoke Role Membership with Quoted Names
+# =============================================================================
+
+# T-QI-07: Grant quoted role to quoted member
+query I
+GRANT "role-with-dash" TO "select"
+----
+Role granted: role-with-dash TO select
+
+# T-QI-08: Revoke quoted role from quoted member
+query I
+REVOKE "role-with-dash" FROM "select"
+----
+Role revoked: role-with-dash FROM select
+
+# =============================================================================
+# 3. Quoted Table Names in Grants
+# =============================================================================
+
+# T-QI-09: Grant on quoted table name
+query I
+GRANT SELECT ON "CaseTable" TO "role-with-dash"
+----
+Table privilege granted: SELECT ON CaseTable TO role-with-dash
+
+# T-QI-10: Revoke from quoted table name
+query I
+REVOKE SELECT ON "CaseTable" FROM "role-with-dash"
+----
+Table privilege revoked: SELECT ON CaseTable FROM role-with-dash
+
+# =============================================================================
+# 4. Quoted Schema.Table References
+# =============================================================================
+
+# T-QI-11: Quoted schema and quoted table
+query I
+GRANT SELECT ON "main"."CaseTable" TO "select"
+----
+Table privilege granted: SELECT ON CaseTable TO select
+
+query I
+REVOKE SELECT ON "main"."CaseTable" FROM "select"
+----
+Table privilege revoked: SELECT ON CaseTable FROM select
+
+# T-QI-12: Mixed quoted schema, unquoted table
+query I
+GRANT SELECT ON "main".normal_table TO "select"
+----
+Table privilege granted: SELECT ON normal_table TO select
+
+query I
+REVOKE SELECT ON "main".normal_table FROM "select"
+----
+Table privilege revoked: SELECT ON normal_table FROM select
+
+# T-QI-13: Unquoted schema, quoted table
+query I
+GRANT SELECT ON main."CaseTable" TO "from"
+----
+Table privilege granted: SELECT ON CaseTable TO from
+
+query I
+REVOKE SELECT ON main."CaseTable" FROM "from"
+----
+Table privilege revoked: SELECT ON CaseTable FROM from
+
+# =============================================================================
+# 5. Quoted Column Names in Grants
+# =============================================================================
+
+# T-QI-14: Grant on quoted columns
+query I
+GRANT SELECT ("ColA") ON "CaseTable" TO "role-with-dash"
+----
+Column privileges granted on CaseTable TO role-with-dash
+
+# T-QI-15: Grant on column with space in name
+query I
+GRANT SELECT ("Col B") ON "CaseTable" TO "role-with-dash"
+----
+Column privileges granted on CaseTable TO role-with-dash
+
+# T-QI-16: Multiple quoted columns
+query I
+GRANT SELECT ("ColA", "Col B") ON "CaseTable" TO "select"
+----
+Column privileges granted on CaseTable TO select
+
+# Verify column grants were recorded
+query I
+SELECT COUNT(*) FROM duckdb_column_privileges WHERE grantee = 'role-with-dash'
+----
+2
+
+# Revoke quoted columns
+query I
+REVOKE SELECT ("ColA", "Col B") ON "CaseTable" FROM "role-with-dash"
+----
+Column privileges revoked on CaseTable FROM role-with-dash
+
+query I
+REVOKE SELECT ("ColA", "Col B") ON "CaseTable" FROM "select"
+----
+Column privileges revoked on CaseTable FROM select
+
+# =============================================================================
+# 6. Quoted Policy Names
+# =============================================================================
+
+# T-QI-17: Create row policy with quoted name
+query I
+CREATE ROW POLICY "my policy" ON "CaseTable" FOR SELECT USING ("ColA" > 0) TO "role-with-dash"
+----
+Row policy created: my policy ON CaseTable
+
+# T-QI-18: Policy name with special characters
+query I
+CREATE ROW POLICY "policy-v2" ON normal_table FOR SELECT USING (id > 0) TO "select"
+----
+Row policy created: policy-v2 ON normal_table
+
+# Verify policies exist
+query I
+SELECT COUNT(*) FROM duckdb_row_policies WHERE policy_name = 'my policy'
+----
+1
+
+# T-QI-19: Drop quoted policy
+query I
+DROP ROW POLICY "my policy" ON "CaseTable"
+----
+Row policy dropped: my policy ON CaseTable
+
+query I
+DROP ROW POLICY "policy-v2" ON normal_table
+----
+Row policy dropped: policy-v2 ON normal_table
+
+# =============================================================================
+# 7. Edge Cases
+# =============================================================================
+
+# T-QI-20: Empty quoted identifier should fail
+statement error
+CREATE ROLE ""
+----
+syntax error
+
+# T-QI-21: Unterminated quote should fail
+statement error
+CREATE ROLE "unterminated
+----
+syntax error
+
+# T-QI-22: Role name with only spaces (should be trimmed or rejected)
+statement error
+CREATE ROLE "   "
+----
+requires a role name
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+
+statement ok
+DROP ROLE "role-with-dash";
+
+statement ok
+DROP ROLE "select";
+
+statement ok
+DROP ROLE "from";
+
+statement ok
+DROP ROLE "role.with.dots";
+
+statement ok
+DROP ROLE "role""quoted";
+
+statement ok
+DROP TABLE "CaseTable";
+
+statement ok
+DROP TABLE normal_table;

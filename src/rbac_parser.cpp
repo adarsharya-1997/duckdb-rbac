@@ -9,7 +9,6 @@
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
-#include <regex>
 
 namespace duckdb {
 
@@ -515,19 +514,263 @@ static TableFunction GetRBACDDLFunction() {
 }
 
 //===--------------------------------------------------------------------===//
-// Parsing Helpers
+// RBACTokenStream Implementation
 //===--------------------------------------------------------------------===//
-bool RBACParserExtension::TryParseCreateRole(const string &upper, const string &original, unique_ptr<RBACParseData> &out) {
-	if (!StringUtil::StartsWith(upper, "CREATE ROLE ")) {
+
+RBACTokenStream::RBACTokenStream(const string &query) : query_(query), pos_(0) {
+	tokens_ = Parser::Tokenize(query);
+}
+
+bool RBACTokenStream::HasMore() const {
+	return pos_ < tokens_.size();
+}
+
+void RBACTokenStream::Advance() {
+	if (pos_ < tokens_.size()) {
+		pos_++;
+	}
+}
+
+SimplifiedTokenType RBACTokenStream::CurrentType() const {
+	if (pos_ >= tokens_.size()) {
+		throw ParserException("Unexpected end of statement");
+	}
+	return tokens_[pos_].type;
+}
+
+idx_t RBACTokenStream::CurrentEnd() const {
+	if (pos_ + 1 < tokens_.size()) {
+		return tokens_[pos_ + 1].start;
+	}
+	return query_.size();
+}
+
+string RBACTokenStream::CurrentText() const {
+	if (pos_ >= tokens_.size()) {
+		return "";
+	}
+	idx_t start = tokens_[pos_].start;
+	idx_t end = CurrentEnd();
+	// Trim whitespace from the end
+	while (end > start && StringUtil::CharacterIsSpace(query_[end - 1])) {
+		end--;
+	}
+	return query_.substr(start, end - start);
+}
+
+string RBACTokenStream::RemainingText() const {
+	if (pos_ >= tokens_.size()) {
+		return "";
+	}
+	return query_.substr(tokens_[pos_].start);
+}
+
+bool RBACTokenStream::IsKeyword(const string &kw) const {
+	if (pos_ >= tokens_.size()) {
+		return false;
+	}
+	if (tokens_[pos_].type != SimplifiedTokenType::SIMPLIFIED_TOKEN_KEYWORD) {
+		return false;
+	}
+	return StringUtil::CIEquals(CurrentText(), kw);
+}
+
+bool RBACTokenStream::MatchKeyword(const string &kw) {
+	if (IsKeyword(kw)) {
+		Advance();
+		return true;
+	}
+	return false;
+}
+
+void RBACTokenStream::ExpectKeyword(const string &kw) {
+	if (!MatchKeyword(kw)) {
+		throw ParserException("Expected keyword '%s'", kw);
+	}
+}
+
+bool RBACTokenStream::IsOperator(char op) const {
+	if (pos_ >= tokens_.size()) {
+		return false;
+	}
+	if (tokens_[pos_].type != SimplifiedTokenType::SIMPLIFIED_TOKEN_OPERATOR) {
+		return false;
+	}
+	string text = CurrentText();
+	return text.size() == 1 && text[0] == op;
+}
+
+bool RBACTokenStream::MatchOperator(char op) {
+	if (IsOperator(op)) {
+		Advance();
+		return true;
+	}
+	return false;
+}
+
+string RBACTokenStream::ExtractIdentifier(idx_t start, idx_t end) const {
+	string text = query_.substr(start, end - start);
+	// Trim whitespace
+	StringUtil::Trim(text);
+
+	if (text.empty()) {
+		return text;
+	}
+
+	// Handle quoted identifier
+	if (text.front() == '"' && text.back() == '"' && text.size() >= 2) {
+		// Remove outer quotes
+		text = text.substr(1, text.size() - 2);
+		// Unescape doubled quotes ("" -> ")
+		text = StringUtil::Replace(text, "\"\"", "\"");
+	}
+	return text;
+}
+
+string RBACTokenStream::ConsumeIdentifier() {
+	if (pos_ >= tokens_.size()) {
+		throw ParserException("Expected identifier");
+	}
+
+	auto type = tokens_[pos_].type;
+	// Accept IDENTIFIER, KEYWORD (for reserved words used as identifiers), or STRING_CONSTANT (for quoted)
+	if (type != SimplifiedTokenType::SIMPLIFIED_TOKEN_IDENTIFIER &&
+	    type != SimplifiedTokenType::SIMPLIFIED_TOKEN_KEYWORD) {
+		throw ParserException("Expected identifier, got %s", CurrentText());
+	}
+
+	string result = ExtractIdentifier(tokens_[pos_].start, CurrentEnd());
+	if (result.empty()) {
+		throw ParserException("Expected identifier");
+	}
+
+	// Validate: reject whitespace-only identifiers
+	string trimmed = result;
+	StringUtil::Trim(trimmed);
+	if (trimmed.empty()) {
+		throw ParserException("Identifier requires a role name");
+	}
+
+	Advance();
+	return result;
+}
+
+QualifiedName RBACTokenStream::ConsumeTableRef() {
+	if (pos_ >= tokens_.size()) {
+		throw ParserException("Expected table reference");
+	}
+
+	// Collect tokens that form the qualified name (identifier . identifier . identifier)
+	string qualified_str;
+	bool expect_dot = false;
+
+	while (HasMore()) {
+		if (expect_dot) {
+			if (IsOperator('.')) {
+				qualified_str += '.';
+				Advance();
+				expect_dot = false;
+			} else {
+				break;  // End of qualified name
+			}
+		} else {
+			auto type = CurrentType();
+			if (type == SimplifiedTokenType::SIMPLIFIED_TOKEN_IDENTIFIER ||
+			    type == SimplifiedTokenType::SIMPLIFIED_TOKEN_KEYWORD) {
+				qualified_str += CurrentText();
+				Advance();
+				expect_dot = true;
+			} else {
+				break;
+			}
+		}
+	}
+
+	if (qualified_str.empty()) {
+		throw ParserException("Expected table reference");
+	}
+
+	// Use DuckDB's QualifiedName::Parse for proper handling
+	QualifiedName qn = QualifiedName::Parse(qualified_str);
+
+	// Default schema to "main" if not specified
+	if (qn.schema == INVALID_SCHEMA || qn.schema.empty()) {
+		qn.schema = "main";
+	}
+
+	return qn;
+}
+
+vector<string> RBACTokenStream::ConsumeColumnList() {
+	// Expect opening parenthesis
+	if (!MatchOperator('(')) {
+		throw ParserException("Expected '(' for column list");
+	}
+
+	vector<string> columns;
+
+	while (HasMore() && !IsOperator(')')) {
+		// Get column name
+		string col = ConsumeIdentifier();
+		columns.push_back(col);
+
+		// Check for comma or end
+		if (IsOperator(',')) {
+			Advance();
+		} else if (!IsOperator(')')) {
+			throw ParserException("Expected ',' or ')' in column list");
+		}
+	}
+
+	// Expect closing parenthesis
+	if (!MatchOperator(')')) {
+		throw ParserException("Expected ')' to close column list");
+	}
+
+	if (columns.empty()) {
+		throw ParserException("Column list cannot be empty");
+	}
+
+	return columns;
+}
+
+string RBACTokenStream::ConsumeUntilKeyword(const string &kw) {
+	if (pos_ >= tokens_.size()) {
+		return "";
+	}
+
+	idx_t start = tokens_[pos_].start;
+	idx_t end = start;
+
+	// Find the keyword
+	while (HasMore() && !IsKeyword(kw)) {
+		end = CurrentEnd();
+		Advance();
+	}
+
+	string result = query_.substr(start, end - start);
+	StringUtil::Trim(result);
+	return result;
+}
+
+//===--------------------------------------------------------------------===//
+// Token-based Parsing Helpers
+//===--------------------------------------------------------------------===//
+
+bool RBACParserExtension::TryParseCreateRole(RBACTokenStream &tokens, unique_ptr<RBACParseData> &out) {
+	// CREATE ROLE name
+	if (!tokens.MatchKeyword("CREATE")) {
+		return false;
+	}
+	if (!tokens.MatchKeyword("ROLE")) {
 		return false;
 	}
 
-	string role_name = original.substr(12);
-	StringUtil::Trim(role_name);
-
-	if (role_name.empty()) {
+	if (!tokens.HasMore()) {
 		throw ParserException("CREATE ROLE requires a role name");
 	}
+
+	string role_name = tokens.ConsumeIdentifier();
 
 	out = make_uniq<RBACParseData>();
 	out->statement_type = RBACStatementType::CREATE_ROLE;
@@ -535,17 +778,20 @@ bool RBACParserExtension::TryParseCreateRole(const string &upper, const string &
 	return true;
 }
 
-bool RBACParserExtension::TryParseDropRole(const string &upper, const string &original, unique_ptr<RBACParseData> &out) {
-	if (!StringUtil::StartsWith(upper, "DROP ROLE ")) {
+bool RBACParserExtension::TryParseDropRole(RBACTokenStream &tokens, unique_ptr<RBACParseData> &out) {
+	// DROP ROLE name
+	if (!tokens.MatchKeyword("DROP")) {
+		return false;
+	}
+	if (!tokens.MatchKeyword("ROLE")) {
 		return false;
 	}
 
-	string role_name = original.substr(10);
-	StringUtil::Trim(role_name);
-
-	if (role_name.empty()) {
+	if (!tokens.HasMore()) {
 		throw ParserException("DROP ROLE requires a role name");
 	}
+
+	string role_name = tokens.ConsumeIdentifier();
 
 	out = make_uniq<RBACParseData>();
 	out->statement_type = RBACStatementType::DROP_ROLE;
@@ -553,28 +799,24 @@ bool RBACParserExtension::TryParseDropRole(const string &upper, const string &or
 	return true;
 }
 
-bool RBACParserExtension::TryParseGrantRole(const string &upper, const string &original, unique_ptr<RBACParseData> &out) {
-	// GRANT role_name TO member_name
-	// Must NOT have SELECT (that's table/column grant)
-	if (!StringUtil::StartsWith(upper, "GRANT ") || StringUtil::Contains(upper, " SELECT")) {
+bool RBACParserExtension::TryParseGrantRole(RBACTokenStream &tokens, unique_ptr<RBACParseData> &out) {
+	// GRANT role_name TO member_name (no SELECT keyword)
+	if (!tokens.MatchKeyword("GRANT")) {
 		return false;
 	}
 
-	// Find TO keyword
-	size_t to_pos = upper.find(" TO ");
-	if (to_pos == string::npos) {
+	// If next token is SELECT, this is a table/column grant
+	if (tokens.IsKeyword("SELECT")) {
 		return false;
 	}
 
-	string role_name = original.substr(6, to_pos - 6);
-	StringUtil::Trim(role_name);
+	string role_name = tokens.ConsumeIdentifier();
 
-	string member_name = original.substr(to_pos + 4);
-	StringUtil::Trim(member_name);
-
-	if (role_name.empty() || member_name.empty()) {
-		throw ParserException("GRANT role TO member requires both role and member names");
+	if (!tokens.MatchKeyword("TO")) {
+		return false;  // Not a role grant
 	}
+
+	string member_name = tokens.ConsumeIdentifier();
 
 	out = make_uniq<RBACParseData>();
 	out->statement_type = RBACStatementType::GRANT_ROLE;
@@ -583,26 +825,24 @@ bool RBACParserExtension::TryParseGrantRole(const string &upper, const string &o
 	return true;
 }
 
-bool RBACParserExtension::TryParseRevokeRole(const string &upper, const string &original, unique_ptr<RBACParseData> &out) {
-	// REVOKE role_name FROM member_name
-	if (!StringUtil::StartsWith(upper, "REVOKE ") || StringUtil::Contains(upper, " SELECT")) {
+bool RBACParserExtension::TryParseRevokeRole(RBACTokenStream &tokens, unique_ptr<RBACParseData> &out) {
+	// REVOKE role_name FROM member_name (no SELECT keyword)
+	if (!tokens.MatchKeyword("REVOKE")) {
 		return false;
 	}
 
-	size_t from_pos = upper.find(" FROM ");
-	if (from_pos == string::npos) {
+	// If next token is SELECT, this is a table/column revoke
+	if (tokens.IsKeyword("SELECT")) {
 		return false;
 	}
 
-	string role_name = original.substr(7, from_pos - 7);
-	StringUtil::Trim(role_name);
+	string role_name = tokens.ConsumeIdentifier();
 
-	string member_name = original.substr(from_pos + 6);
-	StringUtil::Trim(member_name);
-
-	if (role_name.empty() || member_name.empty()) {
-		throw ParserException("REVOKE role FROM member requires both role and member names");
+	if (!tokens.MatchKeyword("FROM")) {
+		return false;  // Not a role revoke
 	}
+
+	string member_name = tokens.ConsumeIdentifier();
 
 	out = make_uniq<RBACParseData>();
 	out->statement_type = RBACStatementType::REVOKE_ROLE;
@@ -611,295 +851,232 @@ bool RBACParserExtension::TryParseRevokeRole(const string &upper, const string &
 	return true;
 }
 
-bool RBACParserExtension::TryParseGrantTable(const string &upper, const string &original, unique_ptr<RBACParseData> &out) {
-	// GRANT SELECT ON table_name TO role_name (no parentheses for columns)
-	if (!StringUtil::StartsWith(upper, "GRANT SELECT ON ")) {
+bool RBACParserExtension::TryParseGrantTable(RBACTokenStream &tokens, unique_ptr<RBACParseData> &out) {
+	// GRANT SELECT ON table TO role (no column list)
+	if (!tokens.MatchKeyword("GRANT")) {
+		return false;
+	}
+	if (!tokens.MatchKeyword("SELECT")) {
 		return false;
 	}
 
-	// Check for column list (parentheses)
-	size_t select_pos = upper.find("SELECT");
-	size_t on_pos = upper.find(" ON ");
-	if (on_pos == string::npos) return false;
-
-	// If there's a ( between SELECT and ON, it's a column grant
-	string between = upper.substr(select_pos + 6, on_pos - select_pos - 6);
-	if (StringUtil::Contains(between, "(")) {
-		return false;  // Column grant, not table grant
+	// If there's a '(' next, it's a column grant
+	if (tokens.IsOperator('(')) {
+		return false;
 	}
 
-	size_t to_pos = upper.find(" TO ");
-	if (to_pos == string::npos) {
-		throw ParserException("GRANT SELECT ON table requires TO role_name");
-	}
+	tokens.ExpectKeyword("ON");
 
-	string table_part = original.substr(on_pos + 4, to_pos - on_pos - 4);
-	StringUtil::Trim(table_part);
+	QualifiedName table_ref = tokens.ConsumeTableRef();
 
-	string role_name = original.substr(to_pos + 4);
-	StringUtil::Trim(role_name);
+	tokens.ExpectKeyword("TO");
 
-	// Parse schema.table or just table
-	string schema_name = "main";
-	string table_name = table_part;
-	size_t dot_pos = table_part.find('.');
-	if (dot_pos != string::npos) {
-		schema_name = table_part.substr(0, dot_pos);
-		table_name = table_part.substr(dot_pos + 1);
-	}
+	string role_name = tokens.ConsumeIdentifier();
 
 	out = make_uniq<RBACParseData>();
 	out->statement_type = RBACStatementType::GRANT_TABLE;
-	out->schema_name = schema_name;
-	out->table_name = table_name;
+	out->schema_name = table_ref.schema;
+	out->table_name = table_ref.name;
 	out->role_name = role_name;
 	return true;
 }
 
-bool RBACParserExtension::TryParseRevokeTable(const string &upper, const string &original, unique_ptr<RBACParseData> &out) {
-	// REVOKE SELECT ON table_name FROM role_name
-	if (!StringUtil::StartsWith(upper, "REVOKE SELECT ON ")) {
+bool RBACParserExtension::TryParseRevokeTable(RBACTokenStream &tokens, unique_ptr<RBACParseData> &out) {
+	// REVOKE SELECT ON table FROM role (no column list)
+	if (!tokens.MatchKeyword("REVOKE")) {
+		return false;
+	}
+	if (!tokens.MatchKeyword("SELECT")) {
 		return false;
 	}
 
-	// Check for column list
-	size_t select_pos = upper.find("SELECT");
-	size_t on_pos = upper.find(" ON ");
-	if (on_pos == string::npos) return false;
-
-	string between = upper.substr(select_pos + 6, on_pos - select_pos - 6);
-	if (StringUtil::Contains(between, "(")) {
+	// If there's a '(' next, it's a column revoke
+	if (tokens.IsOperator('(')) {
 		return false;
 	}
 
-	size_t from_pos = upper.find(" FROM ");
-	if (from_pos == string::npos) {
-		throw ParserException("REVOKE SELECT ON table requires FROM role_name");
-	}
+	tokens.ExpectKeyword("ON");
 
-	string table_part = original.substr(on_pos + 4, from_pos - on_pos - 4);
-	StringUtil::Trim(table_part);
+	QualifiedName table_ref = tokens.ConsumeTableRef();
 
-	string role_name = original.substr(from_pos + 6);
-	StringUtil::Trim(role_name);
+	tokens.ExpectKeyword("FROM");
 
-	string schema_name = "main";
-	string table_name = table_part;
-	size_t dot_pos = table_part.find('.');
-	if (dot_pos != string::npos) {
-		schema_name = table_part.substr(0, dot_pos);
-		table_name = table_part.substr(dot_pos + 1);
-	}
+	string role_name = tokens.ConsumeIdentifier();
 
 	out = make_uniq<RBACParseData>();
 	out->statement_type = RBACStatementType::REVOKE_TABLE;
-	out->schema_name = schema_name;
-	out->table_name = table_name;
+	out->schema_name = table_ref.schema;
+	out->table_name = table_ref.name;
 	out->role_name = role_name;
 	return true;
 }
 
-bool RBACParserExtension::TryParseGrantColumn(const string &upper, const string &original, unique_ptr<RBACParseData> &out) {
-	// GRANT SELECT (col1, col2) ON table_name TO role_name
-	if (!StringUtil::StartsWith(upper, "GRANT SELECT ") || !StringUtil::Contains(upper, "(")) {
+bool RBACParserExtension::TryParseGrantColumn(RBACTokenStream &tokens, unique_ptr<RBACParseData> &out) {
+	// GRANT SELECT (col1, col2) ON table TO role
+	if (!tokens.MatchKeyword("GRANT")) {
+		return false;
+	}
+	if (!tokens.MatchKeyword("SELECT")) {
 		return false;
 	}
 
-	size_t open_paren = original.find('(');
-	size_t close_paren = original.find(')');
-	if (open_paren == string::npos || close_paren == string::npos || close_paren < open_paren) {
+	// Must have column list
+	if (!tokens.IsOperator('(')) {
 		return false;
 	}
 
-	// Extract columns
-	string cols_str = original.substr(open_paren + 1, close_paren - open_paren - 1);
-	vector<string> columns;
-	auto col_parts = StringUtil::Split(cols_str, ',');
-	for (auto &col : col_parts) {
-		StringUtil::Trim(col);
-		if (!col.empty()) {
-			columns.push_back(col);
-		}
-	}
+	vector<string> columns = tokens.ConsumeColumnList();
 
-	if (columns.empty()) {
-		throw ParserException("GRANT SELECT requires at least one column");
-	}
+	tokens.ExpectKeyword("ON");
 
-	// Find ON and TO
-	string rest = original.substr(close_paren + 1);
-	string rest_upper = StringUtil::Upper(rest);
+	QualifiedName table_ref = tokens.ConsumeTableRef();
 
-	size_t on_pos = rest_upper.find(" ON ");
-	size_t to_pos = rest_upper.find(" TO ");
-	if (on_pos == string::npos || to_pos == string::npos || to_pos < on_pos) {
-		throw ParserException("GRANT SELECT (columns) requires ON table TO role");
-	}
+	tokens.ExpectKeyword("TO");
 
-	string table_part = rest.substr(on_pos + 4, to_pos - on_pos - 4);
-	StringUtil::Trim(table_part);
-
-	string role_name = rest.substr(to_pos + 4);
-	StringUtil::Trim(role_name);
-
-	string schema_name = "main";
-	string table_name = table_part;
-	size_t dot_pos = table_part.find('.');
-	if (dot_pos != string::npos) {
-		schema_name = table_part.substr(0, dot_pos);
-		table_name = table_part.substr(dot_pos + 1);
-	}
+	string role_name = tokens.ConsumeIdentifier();
 
 	out = make_uniq<RBACParseData>();
 	out->statement_type = RBACStatementType::GRANT_COLUMN;
-	out->schema_name = schema_name;
-	out->table_name = table_name;
+	out->schema_name = table_ref.schema;
+	out->table_name = table_ref.name;
 	out->column_names = columns;
 	out->role_name = role_name;
 	return true;
 }
 
-bool RBACParserExtension::TryParseRevokeColumn(const string &upper, const string &original, unique_ptr<RBACParseData> &out) {
-	// REVOKE SELECT (col1, col2) ON table_name FROM role_name
-	if (!StringUtil::StartsWith(upper, "REVOKE SELECT ") || !StringUtil::Contains(upper, "(")) {
+bool RBACParserExtension::TryParseRevokeColumn(RBACTokenStream &tokens, unique_ptr<RBACParseData> &out) {
+	// REVOKE SELECT (col1, col2) ON table FROM role
+	if (!tokens.MatchKeyword("REVOKE")) {
+		return false;
+	}
+	if (!tokens.MatchKeyword("SELECT")) {
 		return false;
 	}
 
-	size_t open_paren = original.find('(');
-	size_t close_paren = original.find(')');
-	if (open_paren == string::npos || close_paren == string::npos || close_paren < open_paren) {
+	// Must have column list
+	if (!tokens.IsOperator('(')) {
 		return false;
 	}
 
-	string cols_str = original.substr(open_paren + 1, close_paren - open_paren - 1);
-	vector<string> columns;
-	auto col_parts = StringUtil::Split(cols_str, ',');
-	for (auto &col : col_parts) {
-		StringUtil::Trim(col);
-		if (!col.empty()) {
-			columns.push_back(col);
-		}
-	}
+	vector<string> columns = tokens.ConsumeColumnList();
 
-	string rest = original.substr(close_paren + 1);
-	string rest_upper = StringUtil::Upper(rest);
+	tokens.ExpectKeyword("ON");
 
-	size_t on_pos = rest_upper.find(" ON ");
-	size_t from_pos = rest_upper.find(" FROM ");
-	if (on_pos == string::npos || from_pos == string::npos || from_pos < on_pos) {
-		throw ParserException("REVOKE SELECT (columns) requires ON table FROM role");
-	}
+	QualifiedName table_ref = tokens.ConsumeTableRef();
 
-	string table_part = rest.substr(on_pos + 4, from_pos - on_pos - 4);
-	StringUtil::Trim(table_part);
+	tokens.ExpectKeyword("FROM");
 
-	string role_name = rest.substr(from_pos + 6);
-	StringUtil::Trim(role_name);
-
-	string schema_name = "main";
-	string table_name = table_part;
-	size_t dot_pos = table_part.find('.');
-	if (dot_pos != string::npos) {
-		schema_name = table_part.substr(0, dot_pos);
-		table_name = table_part.substr(dot_pos + 1);
-	}
+	string role_name = tokens.ConsumeIdentifier();
 
 	out = make_uniq<RBACParseData>();
 	out->statement_type = RBACStatementType::REVOKE_COLUMN;
-	out->schema_name = schema_name;
-	out->table_name = table_name;
+	out->schema_name = table_ref.schema;
+	out->table_name = table_ref.name;
 	out->column_names = columns;
 	out->role_name = role_name;
 	return true;
 }
 
-bool RBACParserExtension::TryParseCreateRowPolicy(const string &upper, const string &original, unique_ptr<RBACParseData> &out) {
+bool RBACParserExtension::TryParseCreateRowPolicy(RBACTokenStream &tokens, unique_ptr<RBACParseData> &out) {
 	// CREATE ROW POLICY name ON table FOR SELECT USING (expr) TO role
-	if (!StringUtil::StartsWith(upper, "CREATE ROW POLICY ")) {
+	if (!tokens.MatchKeyword("CREATE")) {
+		return false;
+	}
+	if (!tokens.MatchKeyword("ROW")) {
+		return false;
+	}
+	if (!tokens.MatchKeyword("POLICY")) {
 		return false;
 	}
 
-	// Find key positions
-	size_t on_pos = upper.find(" ON ");
-	size_t using_pos = upper.find(" USING ");
-	size_t to_pos = upper.rfind(" TO ");  // Use rfind to get last TO
+	string policy_name = tokens.ConsumeIdentifier();
 
-	if (on_pos == string::npos || using_pos == string::npos || to_pos == string::npos) {
-		throw ParserException("CREATE ROW POLICY requires: name ON table FOR SELECT USING (expr) TO role");
+	tokens.ExpectKeyword("ON");
+
+	QualifiedName table_ref = tokens.ConsumeTableRef();
+
+	// Optional: FOR SELECT
+	if (tokens.MatchKeyword("FOR")) {
+		tokens.ExpectKeyword("SELECT");
 	}
 
-	// Extract policy name
-	string policy_name = original.substr(18, on_pos - 18);
-	StringUtil::Trim(policy_name);
+	tokens.ExpectKeyword("USING");
 
-	// Extract table name (between ON and FOR/USING)
-	size_t for_pos = upper.find(" FOR ");
-	size_t table_end = (for_pos != string::npos && for_pos < using_pos) ? for_pos : using_pos;
-	string table_part = original.substr(on_pos + 4, table_end - on_pos - 4);
-	StringUtil::Trim(table_part);
-
-	// Extract USING expression (between parentheses)
-	size_t expr_start = original.find('(', using_pos);
-	size_t expr_end = original.rfind(')', to_pos);
-	if (expr_start == string::npos || expr_end == string::npos || expr_end < expr_start) {
-		throw ParserException("CREATE ROW POLICY: USING clause requires (expression)");
+	// Parse the expression in parentheses - we need to handle nested parens
+	if (!tokens.MatchOperator('(')) {
+		throw ParserException("USING clause requires (expression)");
 	}
-	string filter_expr = original.substr(expr_start + 1, expr_end - expr_start - 1);
+
+	// Collect everything until we find the matching close paren and TO keyword
+	// The expression can contain nested parentheses, so we need to track depth
+	string remaining = tokens.RemainingText();
+
+	// Find the closing paren followed by TO
+	int paren_depth = 1;
+	idx_t expr_end = 0;
+	for (idx_t i = 0; i < remaining.size(); i++) {
+		if (remaining[i] == '(') {
+			paren_depth++;
+		} else if (remaining[i] == ')') {
+			paren_depth--;
+			if (paren_depth == 0) {
+				expr_end = i;
+				break;
+			}
+		}
+	}
+
+	if (paren_depth != 0) {
+		throw ParserException("Unterminated expression in USING clause");
+	}
+
+	string filter_expr = remaining.substr(0, expr_end);
 	StringUtil::Trim(filter_expr);
 
-	// Extract role name
-	string role_name = original.substr(to_pos + 4);
-	StringUtil::Trim(role_name);
-
-	// Parse schema.table
-	string schema_name = "main";
-	string table_name = table_part;
-	size_t dot_pos = table_part.find('.');
-	if (dot_pos != string::npos) {
-		schema_name = table_part.substr(0, dot_pos);
-		table_name = table_part.substr(dot_pos + 1);
+	// Skip past the expression tokens to find TO
+	// We need to re-tokenize or skip ahead
+	// For now, consume until we hit TO keyword
+	while (tokens.HasMore() && !tokens.IsKeyword("TO")) {
+		tokens.Advance();
 	}
+
+	tokens.ExpectKeyword("TO");
+
+	string role_name = tokens.ConsumeIdentifier();
 
 	out = make_uniq<RBACParseData>();
 	out->statement_type = RBACStatementType::CREATE_ROW_POLICY;
 	out->policy_name = policy_name;
-	out->schema_name = schema_name;
-	out->table_name = table_name;
+	out->schema_name = table_ref.schema;
+	out->table_name = table_ref.name;
 	out->filter_expression = filter_expr;
 	out->role_name = role_name;
 	return true;
 }
 
-bool RBACParserExtension::TryParseDropRowPolicy(const string &upper, const string &original, unique_ptr<RBACParseData> &out) {
+bool RBACParserExtension::TryParseDropRowPolicy(RBACTokenStream &tokens, unique_ptr<RBACParseData> &out) {
 	// DROP ROW POLICY name ON table
-	if (!StringUtil::StartsWith(upper, "DROP ROW POLICY ")) {
+	if (!tokens.MatchKeyword("DROP")) {
+		return false;
+	}
+	if (!tokens.MatchKeyword("ROW")) {
+		return false;
+	}
+	if (!tokens.MatchKeyword("POLICY")) {
 		return false;
 	}
 
-	size_t on_pos = upper.find(" ON ");
-	if (on_pos == string::npos) {
-		throw ParserException("DROP ROW POLICY requires: name ON table");
-	}
+	string policy_name = tokens.ConsumeIdentifier();
 
-	string policy_name = original.substr(16, on_pos - 16);
-	StringUtil::Trim(policy_name);
+	tokens.ExpectKeyword("ON");
 
-	string table_part = original.substr(on_pos + 4);
-	StringUtil::Trim(table_part);
-
-	string schema_name = "main";
-	string table_name = table_part;
-	size_t dot_pos = table_part.find('.');
-	if (dot_pos != string::npos) {
-		schema_name = table_part.substr(0, dot_pos);
-		table_name = table_part.substr(dot_pos + 1);
-	}
+	QualifiedName table_ref = tokens.ConsumeTableRef();
 
 	out = make_uniq<RBACParseData>();
 	out->statement_type = RBACStatementType::DROP_ROW_POLICY;
 	out->policy_name = policy_name;
-	out->schema_name = schema_name;
-	out->table_name = table_name;
+	out->schema_name = table_ref.schema;
+	out->table_name = table_ref.name;
 	return true;
 }
 
@@ -913,34 +1090,78 @@ RBACParserExtension::RBACParserExtension() {
 }
 
 ParserExtensionParseResult RBACParserExtension::ParseFunction(ParserExtensionInfo *info, const string &query) {
-	// Normalize the query
+	// Normalize the query - remove trailing semicolon
 	string trimmed = query;
 	StringUtil::Trim(trimmed);
-	string upper = StringUtil::Upper(trimmed);
-
-	// Remove trailing semicolon
-	if (StringUtil::EndsWith(upper, ";")) {
-		upper = upper.substr(0, upper.length() - 1);
+	if (StringUtil::EndsWith(trimmed, ";")) {
 		trimmed = trimmed.substr(0, trimmed.length() - 1);
+		StringUtil::Trim(trimmed);
 	}
-	StringUtil::Trim(upper);
-	StringUtil::Trim(trimmed);
 
 	unique_ptr<RBACParseData> parse_data;
 
-	// Try each parser in order
+	// Try each parser in order using fresh token streams
+	// We need fresh streams because each TryParse consumes tokens
 	try {
-		if (TryParseCreateRole(upper, trimmed, parse_data) ||
-		    TryParseDropRole(upper, trimmed, parse_data) ||
-		    TryParseGrantColumn(upper, trimmed, parse_data) ||  // Check column before table
-		    TryParseRevokeColumn(upper, trimmed, parse_data) ||
-		    TryParseGrantTable(upper, trimmed, parse_data) ||
-		    TryParseRevokeTable(upper, trimmed, parse_data) ||
-		    TryParseGrantRole(upper, trimmed, parse_data) ||
-		    TryParseRevokeRole(upper, trimmed, parse_data) ||
-		    TryParseCreateRowPolicy(upper, trimmed, parse_data) ||
-		    TryParseDropRowPolicy(upper, trimmed, parse_data)) {
-			return ParserExtensionParseResult(std::move(parse_data));
+		{
+			RBACTokenStream tokens(trimmed);
+			if (TryParseCreateRole(tokens, parse_data)) {
+				return ParserExtensionParseResult(std::move(parse_data));
+			}
+		}
+		{
+			RBACTokenStream tokens(trimmed);
+			if (TryParseDropRole(tokens, parse_data)) {
+				return ParserExtensionParseResult(std::move(parse_data));
+			}
+		}
+		{
+			RBACTokenStream tokens(trimmed);
+			if (TryParseGrantColumn(tokens, parse_data)) {  // Check column before table
+				return ParserExtensionParseResult(std::move(parse_data));
+			}
+		}
+		{
+			RBACTokenStream tokens(trimmed);
+			if (TryParseRevokeColumn(tokens, parse_data)) {
+				return ParserExtensionParseResult(std::move(parse_data));
+			}
+		}
+		{
+			RBACTokenStream tokens(trimmed);
+			if (TryParseGrantTable(tokens, parse_data)) {
+				return ParserExtensionParseResult(std::move(parse_data));
+			}
+		}
+		{
+			RBACTokenStream tokens(trimmed);
+			if (TryParseRevokeTable(tokens, parse_data)) {
+				return ParserExtensionParseResult(std::move(parse_data));
+			}
+		}
+		{
+			RBACTokenStream tokens(trimmed);
+			if (TryParseGrantRole(tokens, parse_data)) {
+				return ParserExtensionParseResult(std::move(parse_data));
+			}
+		}
+		{
+			RBACTokenStream tokens(trimmed);
+			if (TryParseRevokeRole(tokens, parse_data)) {
+				return ParserExtensionParseResult(std::move(parse_data));
+			}
+		}
+		{
+			RBACTokenStream tokens(trimmed);
+			if (TryParseCreateRowPolicy(tokens, parse_data)) {
+				return ParserExtensionParseResult(std::move(parse_data));
+			}
+		}
+		{
+			RBACTokenStream tokens(trimmed);
+			if (TryParseDropRowPolicy(tokens, parse_data)) {
+				return ParserExtensionParseResult(std::move(parse_data));
+			}
 		}
 	} catch (Exception &e) {
 		return ParserExtensionParseResult(e.what());
