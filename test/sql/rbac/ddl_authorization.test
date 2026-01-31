@@ -1,0 +1,102 @@
+# name: test/sql/rbac/ddl_authorization.test
+# description: Test that non-superuser cannot execute RBAC DDL (Bug #6)
+# group: [rbac]
+# Note: Identity is immutable, so this test sets non-superuser identity at the start
+
+require quack
+
+# =============================================================================
+# Set non-superuser identity (must be done first - identity is immutable)
+# =============================================================================
+
+statement ok
+SELECT * FROM rbac_set_identity('regular_user', ['reader'], false);
+
+# Verify we are not superuser
+query I
+SELECT rbac_is_superuser()
+----
+false
+
+query I
+SELECT rbac_current_user()
+----
+regular_user
+
+# =============================================================================
+# DDL Authorization Tests - All should fail with "superuser" error
+# =============================================================================
+
+# T-AUTH-01: Non-superuser cannot CREATE ROLE
+statement error
+CREATE ROLE should_fail_role
+----
+superuser
+
+# T-AUTH-02: Non-superuser cannot DROP ROLE (even if it doesn't exist, auth check comes first)
+statement error
+DROP ROLE any_role
+----
+superuser
+
+# T-AUTH-03: Non-superuser cannot GRANT role membership
+statement error
+GRANT some_role TO another_role
+----
+superuser
+
+# T-AUTH-04: Non-superuser cannot REVOKE role membership
+statement error
+REVOKE some_role FROM another_role
+----
+superuser
+
+# T-AUTH-05: Non-superuser cannot GRANT table privileges
+statement error
+GRANT SELECT ON any_table TO any_role
+----
+superuser
+
+# T-AUTH-06: Non-superuser cannot REVOKE table privileges
+statement error
+REVOKE SELECT ON any_table FROM any_role
+----
+superuser
+
+# T-AUTH-07: Non-superuser cannot GRANT column privileges
+statement error
+GRANT SELECT (col) ON any_table TO any_role
+----
+superuser
+
+# T-AUTH-08: Non-superuser cannot REVOKE column privileges
+statement error
+REVOKE SELECT (col) ON any_table FROM any_role
+----
+superuser
+
+# T-AUTH-09: Non-superuser cannot CREATE ROW POLICY
+statement error
+CREATE ROW POLICY any_policy ON any_table FOR SELECT USING (id > 0) TO any_role
+----
+superuser
+
+# T-AUTH-10: Non-superuser cannot DROP ROW POLICY
+statement error
+DROP ROW POLICY any_policy ON any_table
+----
+superuser
+
+# =============================================================================
+# Verify regular SQL still works for non-superuser
+# =============================================================================
+
+# Non-superuser can still run regular queries (not RBAC DDL)
+statement ok
+SELECT 1 + 1;
+
+# Non-superuser can read RBAC introspection views
+query I
+SELECT COUNT(*) >= 0 FROM duckdb_roles
+----
+true

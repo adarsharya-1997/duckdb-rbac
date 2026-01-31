@@ -1,4 +1,5 @@
 #include "rbac_parser.hpp"
+#include "rbac_state.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
@@ -120,6 +121,12 @@ static void RBACDDLExecute(ClientContext &context, TableFunctionInput &data, Dat
 
 	if (gstate.done) {
 		return;
+	}
+
+	// Authorization check: only superuser can execute RBAC DDL (Bug #6)
+	auto rbac_state = RBACState::Get(context);
+	if (!rbac_state->is_superuser) {
+		throw PermissionException("RBAC DDL requires superuser privileges");
 	}
 
 	string result_message;
